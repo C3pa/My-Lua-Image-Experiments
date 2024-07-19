@@ -134,7 +134,6 @@ local hueSection = {
 }
 
 --- Fills the image into a vertical hue bar.
---- The image must have height of 256
 function Image:verticalHueBar()
 	local color = { r = 255, g = 0, b = 0 }
 	for y = 1, self.height do
