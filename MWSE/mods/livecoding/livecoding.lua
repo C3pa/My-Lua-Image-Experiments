@@ -337,7 +337,7 @@ function Image:toPixelBufferByte()
 			buffer[offset + 1] = pixel.r
 			buffer[offset + 2] = pixel.g
 			buffer[offset + 3] = pixel.b
-			buffer[offset + 4] = pixel.a
+			buffer[offset + 4] = pixel.a * 255
 			offset = offset + 4
 		end
 	end
@@ -528,8 +528,8 @@ local function openMenu()
 	mainPicker.width = PICKER_MAIN_WIDTH
 	mainPicker.height = PICKER_HEIGHT
 	mainPicker.texture = textures.main
-	-- mainPicker.texture.pixelData:setPixelsByte(blended:toPixelBufferByte())
-	local buffer = blended:toPixelBufferFloat()
+	mainPicker.texture.pixelData:setPixelsByte(blended:toPixelBufferByte())
+	-- local buffer = blended:toPixelBufferFloat()
 	-- mainPicker.texture.pixelData:setPixelsFloat(buffer)
 
 	context.menu:registerAfter(tes3.uiEvent.mouseStillPressedOutside, function (e)
