@@ -1,3 +1,12 @@
+--[[
+	run code without restarting the game! hotkey alt+x
+--]]
+
+tes3.messageBox("Hello World")
+mwse.log("Reset!")
+
+local inspect = require("inspect")
+local logger = require("logging.logger")
 
 local Base = require("livecoding.Base")
 local cursorHelper = require("livecoding.cursorHelper")
