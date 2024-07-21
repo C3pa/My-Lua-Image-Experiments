@@ -796,7 +796,10 @@ local function createPickerBlock(params, parent)
 	local mainIndicatorInitialAbsolutePosAlignY = 1 - initialHSV.v
 	local hueIndicatorInitialAbsolutePosAlignY = initialHSV.h / 360
 
-	local mainPicker = mainRow:createRect({ color = { 1, 1, 1 } })
+	local mainPicker = mainRow:createRect({
+		id = tes3ui.registerID("ColorPicker_main_picker"),
+		color = { 1, 1, 1 },
+	})
 	mainPicker.borderAllSides = 8
 	mainPicker.width = PICKER_MAIN_WIDTH
 	mainPicker.height = PICKER_HEIGHT
@@ -820,7 +823,10 @@ local function createPickerBlock(params, parent)
 	mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
 	mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
 
-	local huePicker = mainRow:createRect({ color = { 1, 1, 1 } })
+	local huePicker = mainRow:createRect({
+		id = tes3ui.registerID("ColorPicker_hue_picker"),
+		color = { 1, 1, 1 },
+	})
 	huePicker.borderAllSides = 8
 	huePicker.width = PICKER_VERTICAL_COLUMN_WIDTH
 	huePicker.height = PICKER_HEIGHT
@@ -845,7 +851,10 @@ local function createPickerBlock(params, parent)
 	local alphaPicker
 	local alphaIndicator
 	if params.alpha then
-		alphaPicker = mainRow:createRect({ color = { 1, 1, 1 } })
+		alphaPicker = mainRow:createRect({
+			id = tes3ui.registerID("ColorPicker_alpha_picker"),
+			color = { 1, 1, 1 },
+		})
 		alphaPicker.borderAllSides = 8
 		alphaPicker.width = PICKER_VERTICAL_COLUMN_WIDTH
 		alphaPicker.height = PICKER_HEIGHT
