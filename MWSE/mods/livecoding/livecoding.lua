@@ -493,6 +493,8 @@ local PICKER_MAIN_WIDTH = 256
 local PICKER_VERTICAL_COLUMN_WIDTH = 32
 local PICKER_PREVIEW_WIDTH = 64
 local PICKER_PREVIEW_HEIGHT = 32
+local INDICATOR_TEXTURE = "textures\\menu_map_smark.dds"
+local INDICATOR_COLOR = { 0.5, 0.5, 0.5 }
 
 local img1 = Image:new({
 	width = PICKER_MAIN_WIDTH,
@@ -548,6 +550,43 @@ if EXPORT_IMAGES_BMP then
 	hueBar:saveBMP("imgHueBar.bmp")
 	alphaBar:saveBMP("imgAlphaBar.bmp")
 end
+
+
+--------------------------------------
+--- Color space conversion helpers ---
+--------------------------------------
+
+--- Returned values are: H in range [0, 360], s [0, 1], v [0, 1]
+--- @param rgb ImagePixel
+function RGBtoHSV(rgb)
+	local Cmax = math.max(rgb.r, rgb.g, rgb.b)
+	local Cmin = math.min(rgb.r, rgb.g, rgb.b)
+	local delta = Cmax - Cmin
+	local h
+	if rgb.r > rgb.g and rgb.r > rgb.b then
+		h = 60 * (((rgb.g - rgb.b) / delta) % 6)
+	elseif rgb.g > rgb.r and rgb.g > rgb.b then
+		h = 60 * (((rgb.b - rgb.r) / delta) + 2)
+	else
+		h = 60 * (((rgb.r - rgb.g) / delta) + 4)
+	end
+	local s
+	if Cmax == 0 then
+		s = 0
+	else
+		s = delta / Cmax
+	end
+
+	return {
+		h = h,
+		s = s,
+		v = Cmax,
+	}
+end
+
+
+
+
 
 
 local textures = {
@@ -752,6 +791,11 @@ local function createPickerBlock(params, parent)
 	mainRow.widthProportional = 1.0
 	mainRow.paddingAllSides = 4
 
+	local initialHSV = RGBtoHSV(params.initialColor)
+	local mainIndicatorInitialAbsolutePosAlignX = initialHSV.s
+	local mainIndicatorInitialAbsolutePosAlignY = 1 - initialHSV.v
+	local hueIndicatorInitialAbsolutePosAlignY = initialHSV.h / 360
+
 	local mainPicker = mainRow:createRect({ color = { 1, 1, 1 } })
 	mainPicker.borderAllSides = 8
 	mainPicker.width = PICKER_MAIN_WIDTH
@@ -768,6 +812,13 @@ local function createPickerBlock(params, parent)
 	mainPicker:register(tes3.uiEvent.mouseRelease, function(e)
 		tes3ui.captureMouseDrag(false)
 	end)
+	local mainIndicator = mainPicker:createImage({
+		id = tes3ui.registerID("ColorPicker_main_picker_indicator"),
+		path = INDICATOR_TEXTURE,
+	})
+	mainIndicator.color = INDICATOR_COLOR
+	mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
+	mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
 
 	local huePicker = mainRow:createRect({ color = { 1, 1, 1 } })
 	huePicker.borderAllSides = 8
@@ -782,8 +833,17 @@ local function createPickerBlock(params, parent)
 	huePicker:register(tes3.uiEvent.mouseRelease, function(e)
 		tes3ui.captureMouseDrag(false)
 	end)
+	local hueIndicator = huePicker:createImage({
+		id = tes3ui.registerID("ColorPicker_hue_picker_indicator"),
+		path = INDICATOR_TEXTURE,
+	})
+	hueIndicator.color = INDICATOR_COLOR
+	hueIndicator.absolutePosAlignX = 0.5
+	hueIndicator.absolutePosAlignY = hueIndicatorInitialAbsolutePosAlignY
+
 
 	local alphaPicker
+	local alphaIndicator
 	if params.alpha then
 		alphaPicker = mainRow:createRect({ color = { 1, 1, 1 } })
 		alphaPicker.borderAllSides = 8
@@ -799,6 +859,13 @@ local function createPickerBlock(params, parent)
 			tes3ui.captureMouseDrag(false)
 		end)
 
+		alphaIndicator = alphaPicker:createImage({
+			id = tes3ui.registerID("ColorPicker_alpha_picker_indicator"),
+			path = INDICATOR_TEXTURE,
+		})
+		alphaIndicator.color = INDICATOR_COLOR
+		alphaIndicator.absolutePosAlignX = 0.5
+		alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
 	end
 
 	local previewContainer = mainRow:createBlock({ id = tes3ui.registerID("ColorPicker_color_preview_container") })
@@ -808,14 +875,6 @@ local function createPickerBlock(params, parent)
 
 	local currentPreview = createPreview(previewContainer, params.initialColor, "Current")
 
-	if params.showOriginal then
-		--- @param e tes3uiEventData
-		local function resetColor(e)
-			hueChanged(params.initialColor, currentPreview, mainPicker)
-		end
-		createPreview(previewContainer, params.initialColor, "Original", resetColor)
-	end
-
 	-- Implement picking behavior
 	mainPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 		local x = math.clamp(e.relativeX, 1, mainPicker.width)
@@ -824,6 +883,10 @@ local function createPickerBlock(params, parent)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
 		colorSelected(color, currentPreview)
+
+		mainIndicator.absolutePosAlignX = x / mainPicker.width
+		mainIndicator.absolutePosAlignY = y / mainPicker.height
+		mainRow:getTopLevelMenu():updateLayout()
 	end)
 
 	huePicker:register(tes3.uiEvent.mouseStillPressed, function(e)
@@ -833,14 +896,35 @@ local function createPickerBlock(params, parent)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
 		hueChanged(color, currentPreview, mainPicker)
+
+		hueIndicator.absolutePosAlignY = y / huePicker.height
+		mainRow:getTopLevelMenu():updateLayout()
 	end)
 
 	if params.alpha then
 		alphaPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
+			local y = math.clamp(e.relativeY / alphaPicker.height, 0, 1)
 			local newColor = table.copy(currentColor)
-			newColor.a = 1 - math.clamp(e.relativeY / alphaPicker.height, 0, 1)
+			newColor.a = 1 - y
 			colorSelected(newColor, currentPreview)
+
+			alphaIndicator.absolutePosAlignY = y
+			mainRow:getTopLevelMenu():updateLayout()
 		end)
+	end
+
+	if params.showOriginal then
+		--- @param e tes3uiEventData
+		local function resetColor(e)
+			hueChanged(params.initialColor, currentPreview, mainPicker)
+
+			mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
+			mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
+			hueIndicator.absolutePosAlignY = hueIndicatorInitialAbsolutePosAlignY
+			alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
+			mainRow:getTopLevelMenu():updateLayout()
+		end
+		createPreview(previewContainer, params.initialColor, "Original", resetColor)
 	end
 
 	colorSelected(params.initialColor, currentPreview)
@@ -920,12 +1004,6 @@ local function openMenu(params)
 		local dataBlock = createDataBlock(params, bodyBlock)
 	end
 
-	-- TODO: marker
-	-- bodyBlock:createImage({
-	-- 	id = tes3ui.registerID("ColorPicker_selector"),
-	-- 	path = "textures\\menu_map_smark.dds",
-	-- })
-
 	context.menu:registerAfter(tes3.uiEvent.mouseStillPressedOutside, function (e)
 		context.menu:destroy()
 		tes3ui.leaveMenuMode()
@@ -936,12 +1014,11 @@ local function openMenu(params)
 end
 
 -- TODO: main points left:
--- Add indicators to each picker area to let the users know the currently picker color
 -- Improve data row
 
 openMenu({
 	alpha = true,
-	initialColor = { r = 0.5, g = 1, b = 1, a = 0.4 },
+	initialColor = { r = 0.5, g = 0.1, b = 0.3, a = 0.4 },
 	showOriginal = true,
 	showDataRow = true,
 
