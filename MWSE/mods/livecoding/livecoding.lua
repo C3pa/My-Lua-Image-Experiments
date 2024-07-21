@@ -226,7 +226,7 @@ end
 --- @param color ImagePixelArgument
 function Image:horizontalColorGradient(color)
 	--- @type ImagePixel
-	local leftColor = { r = 1, g = 1, b = 1 }
+	local leftColor = { r = 1, g = 1, b = 1, a = 1 }
 	self:horizontalGradient(leftColor, color)
 end
 
@@ -271,10 +271,18 @@ function Image:toCheckerboard(size, lightGray, darkGray)
 end
 
 function Image:copy()
+	-- Don't use table.deepCopy here, it causes lag when dragging the hue picker.
+	-- Manually copying row by row helps.
+	local data = table.new(self.height, 0)
+	for y = 1, self.height do
+		data[y] = table.new(self.width, 0)
+		table.copy(self.data[y], data[y])
+	end
+
 	local new = Image:new({
 		height = self.height,
 		width = self.width,
-		data = table.deepcopy(self.data)
+		data = data,
 	})
 
 	return new
@@ -331,6 +339,11 @@ end
 --- https://en.wikipedia.org/wiki/Alpha_compositing#Straight_versus_premultiplied
 function blend.over(pixel1, pixel2, coeff)
 	local inverseA1 = 1 - pixel1.a
+	-- TODO: see if modifying the pixel1 instead of creating a new table is faster
+	-- pixel1.r = pixel1.r + pixel2.r * inverseA1
+	-- pixel1.g = pixel1.g + pixel2.g * inverseA1
+	-- pixel1.b = pixel1.b + pixel2.b * inverseA1
+	-- pixel1.a = pixel1.a + pixel2.a * inverseA1
 	return {
 		r = pixel1.r + pixel2.r * inverseA1,
 		g = pixel1.g + pixel2.g * inverseA1,
@@ -355,19 +368,18 @@ function Image:blend(image, coeff, type)
 		local rowA = new.data[y]
 		local rowB = image.data[y]
 		for x = 1, new.width do
-			local pixelA = rowA[x]
-			local pixelB = rowB[x]
-			rowA[x] = blend(pixelA, pixelB, coeff)
+			rowA[x] = blend(rowA[x], rowB[x], coeff)
 		end
 	end
 	return new
 end
 
+local niPixelData_BYTES_PER_PIXEL = 4
+
 --- For feeding data straight to `niPixelData:setPixelsFloat`.
 function Image:toPixelBufferFloat()
 	local size = self.width * self.height
-	-- local buffer = table.new(size * 4, 0)
-	local buffer = {}
+	local buffer = table.new(size * niPixelData_BYTES_PER_PIXEL, 0)
 	local offset = 0
 
 	for y = 1, self.height do
@@ -389,8 +401,7 @@ end
 --- For feeding data straight to `niPixelData:setPixelsByte`.
 function Image:toPixelBufferByte()
 	local size = self.width * self.height
-	-- local buffer = table.new(size * 4, 0)
-	local buffer = {}
+	local buffer = table.new(size * niPixelData_BYTES_PER_PIXEL, 0)
 	local offset = 0
 
 	for y = 1, self.height do
@@ -401,7 +412,8 @@ function Image:toPixelBufferByte()
 			buffer[offset + 1] = pixel.r * 255
 			buffer[offset + 2] = pixel.g * 255
 			buffer[offset + 3] = pixel.b * 255
-			buffer[offset + 4] = 255
+			-- buffer[offset + 4] = 255
+			buffer[offset + 4] = pixel.a * 255
 			offset = offset + 4
 		end
 	end
@@ -490,16 +502,15 @@ local img1 = Image:new({
 -- Base for the main color picker image.
 img1:horizontalColorGradient({ r = 0, g = 1, b = 0 })
 
-local img2 = Image:new({
+-- Black overlay for the main color picker image.
+local blackGradient = Image:new({
 	width = PICKER_MAIN_WIDTH,
 	height = PICKER_HEIGHT,
 })
-
--- Black overlay for the main color picker image.
-img2:verticalGrayGradient()
+blackGradient:verticalGrayGradient()
 
 -- The main color picker image.
-local blended = img2:blend(img1, 0.5, "over")
+local blended = blackGradient:blend(img1, 0.5, "over")
 
 local hueBar = Image:new({
 	width = PICKER_VERTICAL_COLUMN_WIDTH,
@@ -531,9 +542,9 @@ local previewForeground = Image:new({
 })
 
 if EXPORT_IMAGES_BMP then
-	img2:saveBMP("img2.bmp")
+	blackGradient:saveBMP("blackGradient.bmp")
 	img1:saveBMP("img1.bmp")
-	blended:saveBMP("img1+img2.bmp")
+	blended:saveBMP("img1+blackGradient.bmp")
 	hueBar:saveBMP("imgHueBar.bmp")
 	alphaBar:saveBMP("imgAlphaBar.bmp")
 end
@@ -552,8 +563,11 @@ end
 
 --- @param color ImagePixelArgument
 local function updateMainPickerImage(color)
+	color = table.copy(color)
+	-- Main picker shouldn't be transparent
+	color.a = 1.0
 	img1:horizontalColorGradient(color)
-	blended = img2:blend(img1, 0.5, "plus")
+	blended = blackGradient:blend(img1, 0.5, "over")
 end
 
 --- @param color ImagePixelArgument
@@ -584,6 +598,8 @@ end)
 
 --- @class ColorPicker.new.params
 --- @field alpha boolean? If true the picker will also allow picking an alpha value.
+--- @field showOriginal boolean? If true the picker will show original color below the currently picked color.
+--- @field showDataRow boolean? If true the picker will show RGB(A) values of currently picked color in a label below the picker.
 --- @field initialColor PremulImagePixelA
 
 
@@ -628,8 +644,10 @@ end
 local function updateMainPicker(mainPicker, newColor)
 	newColor = table.copy(newColor) --[[@as ImagePixelA]]
 	updateMainPickerImage(newColor)
-	mainPicker.imageFilter = false
+	-- mainPicker.imageFilter = false
 	mainPicker.texture.pixelData:setPixelsFloat(blended:toPixelBufferFloat())
+	-- mainPicker:getTopLevelMenu():updateLayout()
+	-- mainPicker.imageFilter = false
 end
 
 --- @type PremulImagePixelA
@@ -637,11 +655,18 @@ local currentColor
 
 --- @param newColor ImagePixelA
 --- @param previews ColorPickerPreviewsTable
---- @param mainPicker tes3uiElement
-local function colorSelected(newColor, previews, mainPicker)
+local function colorSelected(newColor, previews)
 	currentColor = table.copy(newColor) --[[@as PremulImagePixelA]]
 	updatePreview(previews, newColor)
-	-- updateMainPicker(mainPicker, newColor)
+end
+
+--- @param newColor ImagePixelA
+--- @param previews ColorPickerPreviewsTable
+--- @param mainPicker tes3uiElement
+local function hueChanged(newColor, previews, mainPicker)
+	currentColor = table.copy(newColor) --[[@as PremulImagePixelA]]
+	updatePreview(previews, newColor)
+	updateMainPicker(mainPicker, newColor)
 end
 
 --- @param parent tes3uiElement
@@ -733,6 +758,9 @@ local function createPickerBlock(params, parent)
 	mainPicker.height = PICKER_HEIGHT
 	mainPicker.texture = textures.main
 	mainPicker.imageFilter = false
+
+	updateMainPickerImage(params.initialColor)
+
 	mainPicker.texture.pixelData:setPixelsFloat(blended:toPixelBufferFloat())
 	mainPicker:register(tes3.uiEvent.mouseDown, function(e)
 		tes3ui.captureMouseDrag(true)
@@ -779,11 +807,14 @@ local function createPickerBlock(params, parent)
 	previewContainer.autoHeight = true
 
 	local currentPreview = createPreview(previewContainer, params.initialColor, "Current")
-	--- @param e tes3uiEventData
-	local function resetColor(e)
-		colorSelected(params.initialColor, currentPreview, mainPicker)
+
+	if params.showOriginal then
+		--- @param e tes3uiEventData
+		local function resetColor(e)
+			hueChanged(params.initialColor, currentPreview, mainPicker)
+		end
+		createPreview(previewContainer, params.initialColor, "Original", resetColor)
 	end
-	local originalPreview = createPreview(previewContainer, params.initialColor, "Original", resetColor)
 
 	-- Implement picking behavior
 	mainPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
@@ -792,7 +823,7 @@ local function createPickerBlock(params, parent)
 		local color = blended:getPixel(x, y)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
-		colorSelected(color, currentPreview, mainPicker)
+		colorSelected(color, currentPreview)
 	end)
 
 	huePicker:register(tes3.uiEvent.mouseStillPressed, function(e)
@@ -801,17 +832,18 @@ local function createPickerBlock(params, parent)
 		local color = hueBar:getPixel(x, y)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
+		hueChanged(color, currentPreview, mainPicker)
 	end)
 
 	if params.alpha then
 		alphaPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 			local newColor = table.copy(currentColor)
 			newColor.a = 1 - math.clamp(e.relativeY / alphaPicker.height, 0, 1)
-			colorSelected(newColor, currentPreview, mainPicker)
+			colorSelected(newColor, currentPreview)
 		end)
 	end
 
-	colorSelected(params.initialColor, currentPreview, mainPicker)
+	colorSelected(params.initialColor, currentPreview)
 	mainRow:getTopLevelMenu():updateLayout()
 	mainPicker.imageFilter = false
 	huePicker.imageFilter = false
@@ -884,9 +916,11 @@ local function openMenu(params)
 	bodyBlock.flowDirection = tes3.flowDirection.topToBottom
 
 	local pickers = createPickerBlock(params, bodyBlock)
-	local dataBlock = createDataBlock(params, bodyBlock)
+	if params.showDataRow then
+		local dataBlock = createDataBlock(params, bodyBlock)
+	end
 
-	-- TODO: add a marker
+	-- TODO: marker
 	-- bodyBlock:createImage({
 	-- 	id = tes3ui.registerID("ColorPicker_selector"),
 	-- 	path = "textures\\menu_map_smark.dds",
@@ -901,4 +935,14 @@ local function openMenu(params)
 	return context.menu
 end
 
-openMenu({ alpha = true, initialColor = { r = 0.5, g = 1, b = 1, a = 0.4 } })
+-- TODO: main points left:
+-- Add indicators to each picker area to let the users know the currently picker color
+-- Improve data row
+
+openMenu({
+	alpha = true,
+	initialColor = { r = 0.5, g = 1, b = 1, a = 0.4 },
+	showOriginal = true,
+	showDataRow = true,
+
+})
