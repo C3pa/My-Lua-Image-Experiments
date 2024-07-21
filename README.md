@@ -1,6 +1,6 @@
 # My Lua Image Experiments
 
-Some image related experiments for use with MWSE.
+Some image related experiments for use with MWSE. To use drop the file from this repo's `MWSE` directory into your `MWSE` directory. You will need livecoding installed. For rapid prototyping just do `Alt + x` on the main menu and preview the changes instantly. Then close the menu using `f` key. Then you can do additional changes and preview them by restarting livecoding.
 
 ## Example
 
