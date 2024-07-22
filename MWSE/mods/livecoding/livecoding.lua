@@ -338,17 +338,13 @@ end
 
 --- https://en.wikipedia.org/wiki/Alpha_compositing#Straight_versus_premultiplied
 function blend.over(pixel1, pixel2, coeff)
-	local inverseA1 = 1 - pixel1.a
+	local inverseA2 = 1 - pixel2.a
 	-- TODO: see if modifying the pixel1 instead of creating a new table is faster
-	-- pixel1.r = pixel1.r + pixel2.r * inverseA1
-	-- pixel1.g = pixel1.g + pixel2.g * inverseA1
-	-- pixel1.b = pixel1.b + pixel2.b * inverseA1
-	-- pixel1.a = pixel1.a + pixel2.a * inverseA1
 	return {
-		r = pixel1.r + pixel2.r * inverseA1,
-		g = pixel1.g + pixel2.g * inverseA1,
-		b = pixel1.b + pixel2.b * inverseA1,
-		a = pixel1.a + pixel2.a * inverseA1,
+		r = pixel2.r + pixel1.r * inverseA2,
+		g = pixel2.g + pixel1.g * inverseA2,
+		b = pixel2.b + pixel1.b * inverseA2,
+		a = pixel2.a + pixel1.a * inverseA2,
 	}
 end
 
@@ -356,22 +352,31 @@ end
 --- @param image Image
 --- @param coeff number In range of [0, 1].
 --- @param type ImageBlendType
-function Image:blend(image, coeff, type)
+--- @param copy boolean? If true, won't modify `self`, but will return the result of blend operation in a Image copy.
+function Image:blend(image, coeff, type, copy)
 	local sameWidth = self.width == image.width
 	local sameHeight = self.height == image.height
 	assert(sameWidth, "Images must be of same width.")
 	assert(sameHeight, "Images must be of same height.")
 
-	local new = self:copy()
+	local data = self.data
+	--- @type Image|nil
+	local new
+	if copy then
+		new = self:copy()
+		data = new.data
+	end
 	local blend = blend[type]
-	for y = 1, new.height do
-		local rowA = new.data[y]
+	for y = 1, self.height do
+		local rowA = data[y]
 		local rowB = image.data[y]
-		for x = 1, new.width do
+		for x = 1, self.width do
 			rowA[x] = blend(rowA[x], rowB[x], coeff)
 		end
 	end
-	return new
+	if copy then
+		return new
+	end
 end
 
 local niPixelData_BYTES_PER_PIXEL = 4
@@ -496,13 +501,13 @@ local PICKER_PREVIEW_HEIGHT = 32
 local INDICATOR_TEXTURE = "textures\\menu_map_smark.dds"
 local INDICATOR_COLOR = { 0.5, 0.5, 0.5 }
 
-local img1 = Image:new({
+local mainImage = Image:new({
 	width = PICKER_MAIN_WIDTH,
 	height = PICKER_HEIGHT,
 })
 
 -- Base for the main color picker image.
-img1:horizontalColorGradient({ r = 0, g = 1, b = 0 })
+mainImage:horizontalColorGradient({ r = 0, g = 1, b = 0 })
 
 -- Black overlay for the main color picker image.
 local blackGradient = Image:new({
@@ -512,7 +517,7 @@ local blackGradient = Image:new({
 blackGradient:verticalGrayGradient()
 
 -- The main color picker image.
-local blended = blackGradient:blend(img1, 0.5, "over")
+mainImage:blend(blackGradient, 0.5, "over")
 
 local hueBar = Image:new({
 	width = PICKER_VERTICAL_COLUMN_WIDTH,
@@ -531,7 +536,7 @@ local alphaBar = Image:new({
 	height = PICKER_HEIGHT,
 })
 alphaBar:verticalGradient({ r = 0.35, g = 0.35, b = 0.35, a = 1.0 }, { r = 1, g = 1, b = 1, a = 0.0 })
-alphaBar = alphaBar:blend(alphaChecker, 0.5, "over")
+alphaBar = alphaChecker:blend(alphaBar, 0.5, "over", true) --[[@as Image]]
 
 local previewCheckers = Image:new({
 	width = PICKER_PREVIEW_WIDTH / 2,
@@ -545,8 +550,7 @@ local previewForeground = Image:new({
 
 if EXPORT_IMAGES_BMP then
 	blackGradient:saveBMP("blackGradient.bmp")
-	img1:saveBMP("img1.bmp")
-	blended:saveBMP("img1+blackGradient.bmp")
+	mainImage:saveBMP("mainImage+blackGradient.bmp")
 	hueBar:saveBMP("imgHueBar.bmp")
 	alphaBar:saveBMP("imgAlphaBar.bmp")
 end
@@ -605,14 +609,14 @@ local function updateMainPickerImage(color)
 	color = table.copy(color)
 	-- Main picker shouldn't be transparent
 	color.a = 1.0
-	img1:horizontalColorGradient(color)
-	blended = blackGradient:blend(img1, 0.5, "over")
+	mainImage:horizontalColorGradient(color)
+	mainImage:blend(blackGradient, 0.5, "over")
 end
 
 --- @param color ImagePixelArgument
 local function updatePreviewImage(color)
 	previewForeground:fillColor(color)
-	previewForeground = previewForeground:blend(previewCheckers, 0.5, "over")
+	previewForeground = previewCheckers:blend(previewForeground, 0.5, "over", true)
 end
 
 local UIID = {
@@ -684,7 +688,7 @@ local function updateMainPicker(mainPicker, newColor)
 	newColor = table.copy(newColor) --[[@as ImagePixelA]]
 	updateMainPickerImage(newColor)
 	-- mainPicker.imageFilter = false
-	mainPicker.texture.pixelData:setPixelsFloat(blended:toPixelBufferFloat())
+	mainPicker.texture.pixelData:setPixelsFloat(mainImage:toPixelBufferFloat())
 	-- mainPicker:getTopLevelMenu():updateLayout()
 	-- mainPicker.imageFilter = false
 end
@@ -808,7 +812,7 @@ local function createPickerBlock(params, parent)
 
 	updateMainPickerImage(params.initialColor)
 
-	mainPicker.texture.pixelData:setPixelsFloat(blended:toPixelBufferFloat())
+	mainPicker.texture.pixelData:setPixelsFloat(mainImage:toPixelBufferFloat())
 	mainPicker:register(tes3.uiEvent.mouseDown, function(e)
 		tes3ui.captureMouseDrag(true)
 	end)
@@ -888,7 +892,7 @@ local function createPickerBlock(params, parent)
 	mainPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 		local x = math.clamp(e.relativeX, 1, mainPicker.width)
 		local y = math.clamp(e.relativeY, 1, mainPicker.height)
-		local color = blended:getPixel(x, y)
+		local color = mainImage:getPixel(x, y)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
 		colorSelected(color, currentPreview)
