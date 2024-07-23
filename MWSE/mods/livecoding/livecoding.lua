@@ -11,10 +11,85 @@ local logger = require("logging.logger")
 local Base = require("livecoding.Base")
 local cursorHelper = require("livecoding.cursorHelper")
 local headingMenu = require("livecoding.headingMenu")
+-- local okhsv = dofile("livecoding.okhsv")
 
 -- Will export the test images as BMP files for inspecting. This will force all the image
 -- dimensions to 200x100.
 local EXPORT_IMAGES_BMP = false
+
+
+
+--------------------------------------
+--- Color space conversion helpers ---
+--------------------------------------
+
+--- @class HSV
+--- @field h number Hue in range [0, 360)
+--- @field s number Saturation in range [0, 1]
+--- @field v number Value/brightness in range [0, 1]
+
+--- Returned values are: H in range [0, 360), s [0, 1], v [0, 1]
+--- @param rgb ImagePixel
+--- @return HSV
+function RGBtoHSV(rgb)
+	local Cmax = math.max(rgb.r, rgb.g, rgb.b)
+	local Cmin = math.min(rgb.r, rgb.g, rgb.b)
+	local delta = Cmax - Cmin
+	local h
+	if rgb.r > rgb.g and rgb.r > rgb.b then
+		h = 60 * (((rgb.g - rgb.b) / delta) % 6)
+	elseif rgb.g > rgb.r and rgb.g > rgb.b then
+		h = 60 * (((rgb.b - rgb.r) / delta) + 2)
+	else
+		h = 60 * (((rgb.r - rgb.g) / delta) + 4)
+	end
+	local s
+	if Cmax == 0 then
+		s = 0
+	else
+		s = delta / Cmax
+	end
+
+	return {
+		h = h,
+		s = s,
+		v = Cmax,
+	}
+end
+
+--- @param hsv HSV
+--- @return ImagePixel
+function HSVtoRGB(hsv)
+	local H = hsv.h / 60
+	if math.isclose(H, 360) then
+		H = 0
+	end
+	local fract = H - math.floor(H)
+
+	local P = hsv.v * (1 - hsv.s)
+	local Q = hsv.v * (1 - hsv.s * fract)
+	local T = hsv.v * (1 - hsv.s * (1 - fract))
+	local rgb
+	if 0 <= H and H < 1 then
+		rgb = { r = hsv.v, g = T, b = P }
+	elseif 1 <= H and H < 2 then
+		rgb = { r = Q, g = hsv.v, b = P }
+	elseif 2 <= H and H < 3 then
+		rgb = { r = P, g = hsv.v, b = T }
+	elseif 3 <= H and H < 4 then
+		rgb = { r = P, g = Q, b = hsv.v }
+	elseif 4 <= H and H < 5 then
+		rgb = { r = T, g = P, b = hsv.v }
+	elseif 5 <= H and H < 6 then
+		rgb = { r = hsv.v, g = P, b = Q }
+	else
+		rgb = { r = 0, g = 0, b = 0 }
+	end
+
+	return rgb
+end
+-- TODO: consider implementing this conversion in C
+-- HSVtoRGB = okhsv.okhsv_to_srgb
 
 --- @class ImagePixel
 --- @field r number Red in range [0, 1].
@@ -151,27 +226,33 @@ local hueSection = {
 	sixth = 6 / 6,
 }
 
---- Modifies the Image in place.
---- Fills the image into a vertical hue bar.
+--- Modifies the Image in place. Fills the image into a vertical hue bar. HSV value at the top is:
+--- `{ H = 0, s = 1.0, v = 1.0 }`, at the bottom `{ H = 360, s = 1.0, v = 1.0 }`
 function Image:verticalHueBar()
-	--- @type PremulImagePixelA
-	local color = { r = 1, g = 0, b = 0, a = 1 }
+	--- @type HSV
+	local hsv = { h = 0, s = 1.0, v = 1.0 }
 	for y = 1, self.height do
 		local t = y / self.height
-		self:fillRow(y, color)
 
-		if t < hueSection.first then
-			color.g = math.lerp(0, 1, (t / hueSection.first))
-		elseif t < hueSection.second then
-			color.r = math.lerp(1, 0, ((t - hueSection.first) / hueSection.first))
-		elseif t < hueSection.third then
-			color.b = math.lerp(0, 1, ((t - hueSection.second) / hueSection.first))
-		elseif t < hueSection.fourth then
-			color.g = math.lerp(1, 0, ((t - hueSection.third) / hueSection.first))
-		elseif t < hueSection.fifth then
-			color.r = math.lerp(0, 1, ((t - hueSection.fourth) / hueSection.first))
-		else
-			color.b = math.lerp(1, 0, ((t - hueSection.fifth) / hueSection.first))
+		hsv.h = math.lerp(0, 360, t)
+		local color = HSVtoRGB(hsv) --[[@as PremulImagePixelA]]
+		self:fillRow(y, color)
+	end
+end
+
+--- @param hue number Hue in range [0, 360)
+function Image:mainPicker(hue)
+	--- @type HSV
+	local hsv = { h = hue, s = 0.0, v = 0.0 }
+	for y = 1, self.height do
+		local row = self.data[y]
+		hsv.v = 1 - y / self.height
+
+		for x = 1, self.width do
+			hsv.s = x / self.width
+			local rgb = HSVtoRGB(hsv) --[[@as PremulImagePixelA]]
+			rgb.a = 1.0
+			table.copy(rgb, row[x])
 		end
 	end
 end
@@ -507,7 +588,19 @@ local mainImage = Image:new({
 })
 
 -- Base for the main color picker image.
-mainImage:horizontalColorGradient({ r = 0, g = 1, b = 0 })
+-- mainImage:horizontalColorGradient({ r = 0, g = 1, b = 0 })
+mainImage:mainPicker(60)
+
+-- local gettime = require("socket").gettime
+-- local t1 = gettime()
+-- for i = 0, 255 do
+-- 	mainImage:mainPicker(i)
+-- end
+-- local m = string.format("TEST DONE! Time elapsed: %ss", gettime() - t1)
+-- mwse.log(m)
+-- tes3.messageBox(m)
+
+
 
 -- Black overlay for the main color picker image.
 local blackGradient = Image:new({
@@ -517,7 +610,7 @@ local blackGradient = Image:new({
 blackGradient:verticalGrayGradient()
 
 -- The main color picker image.
-mainImage:blend(blackGradient, 0.5, "over")
+-- mainImage:blend(blackGradient, 0.5, "over")
 
 local hueBar = Image:new({
 	width = PICKER_VERTICAL_COLUMN_WIDTH,
@@ -556,40 +649,6 @@ if EXPORT_IMAGES_BMP then
 end
 
 
---------------------------------------
---- Color space conversion helpers ---
---------------------------------------
-
---- Returned values are: H in range [0, 360], s [0, 1], v [0, 1]
---- @param rgb ImagePixel
-function RGBtoHSV(rgb)
-	local Cmax = math.max(rgb.r, rgb.g, rgb.b)
-	local Cmin = math.min(rgb.r, rgb.g, rgb.b)
-	local delta = Cmax - Cmin
-	local h
-	if rgb.r > rgb.g and rgb.r > rgb.b then
-		h = 60 * (((rgb.g - rgb.b) / delta) % 6)
-	elseif rgb.g > rgb.r and rgb.g > rgb.b then
-		h = 60 * (((rgb.b - rgb.r) / delta) + 2)
-	else
-		h = 60 * (((rgb.r - rgb.g) / delta) + 4)
-	end
-	local s
-	if Cmax == 0 then
-		s = 0
-	else
-		s = delta / Cmax
-	end
-
-	return {
-		h = h,
-		s = s,
-		v = Cmax,
-	}
-end
-
-
-
 
 
 
@@ -609,8 +668,10 @@ local function updateMainPickerImage(color)
 	color = table.copy(color)
 	-- Main picker shouldn't be transparent
 	color.a = 1.0
-	mainImage:horizontalColorGradient(color)
-	mainImage:blend(blackGradient, 0.5, "over")
+	local hsv = RGBtoHSV(color)
+	mainImage:mainPicker(hsv.h)
+	-- mainImage:horizontalColorGradient(color)
+	-- mainImage:blend(blackGradient, 0.5, "over")
 end
 
 --- @param color ImagePixelArgument
@@ -905,6 +966,8 @@ local function createPickerBlock(params, parent)
 	huePicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 		local x = math.clamp(e.relativeX, 1, mainPicker.width)
 		local y = math.clamp(e.relativeY, 1, mainPicker.height)
+		-- TODO: we get black at the bottom of HUE picker
+		tes3.messageBox("y = %s", y)
 		local color = hueBar:getPixel(x, y)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
@@ -954,6 +1017,71 @@ local function createPickerBlock(params, parent)
 	}
 end
 
+--- @alias channelType
+---| 'r'
+---| 'g'
+---| 'b'
+---| 'a'
+
+--- @param color number
+local function channelToString(color)
+	return string.format("%.3f", color * 255)
+end
+
+--- @param params ColorPicker.new.params
+--- @param parent tes3uiElement
+--- @param channel channelType
+local function createValueLabel(params, parent, channel)
+	local container = parent:createBlock({
+		id = tes3ui.registerID("ColorPicker_data_row_value_container")
+	})
+	container.autoHeight = true
+	container.autoWidth = true
+	container.paddingAllSides = 8
+
+	local nameLabel = container:createLabel({
+		id = tes3ui.registerID("ColorPicker_data_row_value_nameLabel_" .. channel),
+		text = string.format("%s:", string.upper(channel)),
+	})
+	nameLabel.paddingRight = 8
+	nameLabel.color = tes3ui.getPalette(tes3.palette.headerColor)
+
+
+	local input = container:createTextInput({
+		id = tes3ui.registerID("ColorPicker_data_row_value_input_" .. channel),
+		numeric = true,
+		text = channelToString(params.initialColor[channel]),
+	})
+	input.borderLeft = 4
+	input.color = tes3ui.getPalette(tes3.palette.activeColor)
+
+	-- Make it clear that the value fields accept text input.
+	input:registerAfter(tes3.uiEvent.mouseOver, function(e)
+		input.color = tes3ui.getPalette(tes3.palette.activeOverColor)
+		input:updateLayout()
+	end)
+	input:registerAfter(tes3.uiEvent.mouseLeave, function(e)
+		input.color = tes3ui.getPalette(tes3.palette.activeColor)
+		input:updateLayout()
+	end)
+
+	-- Update color after new value was entered.
+	input:registerAfter(tes3.uiEvent.keyEnter, function(e)
+		-- Clearing the text input will set the color to 0.
+		local text = input.text
+		if text == "" then
+			text = '0'
+		end
+
+		-- Make sure the entered color will be clamped to [0, 255].
+		local color = math.clamp(tonumber(text), 0, 255) / 255
+		input.text = channelToString(color)
+		input.color = tes3ui.getPalette(tes3.palette.activeColor)
+		input:updateLayout()
+	end)
+	return input
+end
+
 --- @param params ColorPicker.new.params
 --- @param parent tes3uiElement
 local function createDataBlock(params, parent)
@@ -972,15 +1100,20 @@ local function createDataBlock(params, parent)
 	dataRow.widthProportional = 1.0
 	dataRow.paddingAllSides = 4
 
-	local valueLabel = dataRow:createLabel({
-		id = tes3ui.registerID("ColorPicker_ValueLabel"),
-		text = pixelToString(initialColor)
-	})
-	valueLabel.autoHeight = true
-	valueLabel.autoWidth = true
+	--- @type channelType[]
+	local channels = { 'r', 'g', 'b' }
+	if params.alpha then
+		table.insert(channels, 'a')
+	end
+
+	--- @type table<channelType, tes3uiElement>
+	local inputs = {}
+	for _, channel in ipairs(channels) do
+		inputs[channel] = createValueLabel(params, dataRow, channel)
+	end
 
 	return {
-		valueLabel = valueLabel,
+		inputs = inputs,
 	}
 end
 
@@ -1013,20 +1146,18 @@ local function openMenu(params)
 	bodyBlock.flowDirection = tes3.flowDirection.topToBottom
 
 	local pickers = createPickerBlock(params, bodyBlock)
+	local dataBlock
 	if params.showDataRow then
-		local dataBlock = createDataBlock(params, bodyBlock)
+		dataBlock = createDataBlock(params, bodyBlock)
 	end
 
-	context.menu:registerAfter(tes3.uiEvent.mouseStillPressedOutside, function (e)
-		context.menu:destroy()
-		tes3ui.leaveMenuMode()
-	end)
 	tes3ui.enterMenuMode(UIID.menu)
 	context.menu:getTopLevelMenu():updateLayout()
 	return context.menu
 end
 
 -- TODO: main points left:
+-- Consider implementing a proportional color space such as okhsv
 -- Improve data row
 
 openMenu({
