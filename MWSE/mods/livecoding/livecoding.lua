@@ -88,8 +88,11 @@ function HSVtoRGB(hsv)
 
 	return rgb
 end
--- TODO: consider implementing this conversion in C
--- HSVtoRGB = okhsv.okhsv_to_srgb
+
+-- Let's try out oklab conversion functions
+local oklab = require("livecoding.oklab")
+HSVtoRGB = oklab.hsvtosrgb
+RGBtoHSV = oklab.srgbtohsv
 
 --- @class ImagePixel
 --- @field r number Red in range [0, 1].
