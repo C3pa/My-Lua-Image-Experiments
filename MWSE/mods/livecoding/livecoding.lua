@@ -1086,7 +1086,9 @@ local function createPickerBlock(params, parent)
 			mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
 			mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
 			hueIndicator.absolutePosAlignY = hueIndicatorInitialAbsolutePosAlignY
-			alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
+			if params.alpha then
+				alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
+			end
 			mainRow:getTopLevelMenu():updateLayout()
 		end
 		createPreview(previewContainer, params.initialColor, "Original", resetColor)
@@ -1238,6 +1240,10 @@ local function openMenu(params)
 	if menu then
 		return menu
 	end
+	if not params.alpha then
+		params.initialColor.a = 1
+	end
+
 	local x, y = cursorHelper.getCursorCoorsMenuRelative()
 
 	local context = headingMenu.create({
