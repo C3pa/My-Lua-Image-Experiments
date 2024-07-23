@@ -757,11 +757,41 @@ end
 --- @type PremulImagePixelA
 local currentColor
 
+local function getValueInputs()
+	local menu = tes3ui.findMenu(UIID.menu)
+	--- @cast menu -nil
+	local dataRow = menu:findChild(tes3ui.registerID("ColorPicker_data_row_container"))
+	if not dataRow then return end
+	--- @type table<channelType, tes3uiElement>
+	local inputs = {}
+	for _, child in ipairs(dataRow.children) do
+		local input = child.children[2]
+		local channel = input:getLuaData("channel")
+		inputs[channel] = input
+	end
+	return inputs
+end
+
+--- @param color number
+local function channelToString(color)
+	return string.format("%.3f", color * 255)
+end
+
+--- @param newColor ImagePixelA
+local function updateValueInputs(newColor)
+	local inputs = getValueInputs()
+	if not inputs then return end
+	for channel, input in pairs(inputs) do
+		input.text = channelToString(newColor[channel])
+	end
+end
+
 --- @param newColor ImagePixelA
 --- @param previews ColorPickerPreviewsTable
 local function colorSelected(newColor, previews)
 	currentColor = table.copy(newColor) --[[@as PremulImagePixelA]]
 	updatePreview(previews, newColor)
+	updateValueInputs(newColor)
 end
 
 --- @param newColor ImagePixelA
@@ -771,6 +801,7 @@ local function hueChanged(newColor, previews, mainPicker)
 	currentColor = table.copy(newColor) --[[@as PremulImagePixelA]]
 	updatePreview(previews, newColor)
 	updateMainPicker(mainPicker, newColor)
+	updateValueInputs(newColor)
 end
 
 --- @param parent tes3uiElement
@@ -1024,11 +1055,6 @@ end
 ---| 'b'
 ---| 'a'
 
---- @param color number
-local function channelToString(color)
-	return string.format("%.3f", color * 255)
-end
-
 --- Returns the channel value by reading `text` property of given TextInput. Returned value is in range of [0, 1].
 --- @param input tes3uiElement
 local function getInputValue(input)
@@ -1079,6 +1105,7 @@ local function createValueLabel(params, parent, channel, onNewValueEntered)
 	})
 	input.borderLeft = 4
 	input.color = tes3ui.getPalette(tes3.palette.activeColor)
+	input:setLuaData("channel", channel)
 
 	-- Make it clear that the value fields accept text input.
 	input:registerAfter(tes3.uiEvent.mouseOver, function(e)
@@ -1194,6 +1221,7 @@ local function openMenu(params)
 	if params.showDataRow then
 		dataBlock = createDataBlock(params, bodyBlock, onNewColorEntered, onNewAlphaEntered)
 	end
+	getValueInputs()
 
 	tes3ui.enterMenuMode(UIID.menu)
 	context.menu:getTopLevelMenu():updateLayout()
@@ -1202,7 +1230,7 @@ end
 
 -- TODO: main points left:
 -- Consider implementing a proportional color space such as okhsv
--- Improve data row
+-- Value inputs need to update picker indicator positions.
 
 openMenu({
 	alpha = true,
