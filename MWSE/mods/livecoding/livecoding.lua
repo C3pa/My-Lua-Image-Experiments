@@ -757,6 +757,61 @@ end
 --- @type PremulImagePixelA
 local currentColor
 
+
+--- @alias IndicatorID
+---| "main"
+---| "hue"
+---| "alpha"
+
+local function getIndicators()
+	local menu = tes3ui.findMenu(UIID.menu)
+	--- @cast menu -nil
+
+	local pickerRow = menu:findChild(tes3ui.registerID("ColorPicker_picker_row_container"))
+
+	--- @type table<IndicatorID, tes3uiElement>
+	local indicators = {}
+	for i = 1, 3 do
+		local indicator = pickerRow.children[i].children[1]
+		local id = indicator:getLuaData("indicatorID")
+		if id then
+			indicators[id] = indicator
+		end
+	end
+	return indicators
+end
+
+--- @param mainIndicator tes3uiElement
+--- @param hsv HSV
+local function updateMainIndicatorPosition(mainIndicator, hsv)
+	mainIndicator.absolutePosAlignX = hsv.s
+	mainIndicator.absolutePosAlignY = hsv.v
+end
+
+--- @param hueIndicator tes3uiElement
+--- @param hsv HSV
+local function updateHueIndicatorPosition(hueIndicator, hsv)
+	local y = hsv.h / 360
+	hueIndicator.absolutePosAlignY = y
+end
+
+--- @param alphaIndicator tes3uiElement
+--- @param alpha number
+local function updateAlphaIndicatorPosition(alphaIndicator, alpha)
+	alphaIndicator.absolutePosAlignY = 1 - alpha
+end
+
+--- @param hsv HSV
+local function updateIndicatorPositions(hsv, alpha)
+	local indicators = getIndicators()
+	updateMainIndicatorPosition(indicators.main, hsv)
+	updateHueIndicatorPosition(indicators.hue, hsv)
+	if indicators.alpha then
+		updateAlphaIndicatorPosition(indicators.alpha, alpha)
+	end
+	indicators.hue:getTopLevelMenu():updateLayout()
+end
+
 local function getValueInputs()
 	local menu = tes3ui.findMenu(UIID.menu)
 	--- @cast menu -nil
@@ -918,6 +973,7 @@ local function createPickerBlock(params, parent)
 	mainIndicator.color = INDICATOR_COLOR
 	mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
 	mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
+	mainIndicator:setLuaData("indicatorID", "main")
 
 	local huePicker = mainRow:createRect({
 		id = tes3ui.registerID("ColorPicker_hue_picker"),
@@ -942,6 +998,7 @@ local function createPickerBlock(params, parent)
 	hueIndicator.color = INDICATOR_COLOR
 	hueIndicator.absolutePosAlignX = 0.5
 	hueIndicator.absolutePosAlignY = hueIndicatorInitialAbsolutePosAlignY
+	hueIndicator:setLuaData("indicatorID", "hue")
 
 
 	local alphaPicker
@@ -971,6 +1028,7 @@ local function createPickerBlock(params, parent)
 		alphaIndicator.color = INDICATOR_COLOR
 		alphaIndicator.absolutePosAlignX = 0.5
 		alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
+		alphaIndicator:setLuaData("indicatorID", "alpha")
 	end
 
 	local previewContainer = mainRow:createBlock({ id = tes3ui.registerID("ColorPicker_color_preview_container") })
@@ -1205,8 +1263,9 @@ local function openMenu(params)
 
 	--- @param newColor ImagePixelA
 	local function onNewColorEntered(newColor)
-		-- TODO: update position of indicators on hue and main pickers
 		hueChanged(newColor, pickers.currentPreview, pickers.mainPicker)
+		local hsv = RGBtoHSV(newColor)
+		updateIndicatorPositions(hsv, newColor.a)
 	end
 
 	local onNewAlphaEntered
@@ -1214,6 +1273,8 @@ local function openMenu(params)
 		--- @param newColor ImagePixelA
 		onNewAlphaEntered = function(newColor)
 			colorSelected(newColor, pickers.currentPreview)
+			local hsv = RGBtoHSV(newColor)
+			updateIndicatorPositions(hsv, newColor.a)
 		end
 	end
 
@@ -1230,7 +1291,6 @@ end
 
 -- TODO: main points left:
 -- Consider implementing a proportional color space such as okhsv
--- Value inputs need to update picker indicator positions.
 
 openMenu({
 	alpha = true,
