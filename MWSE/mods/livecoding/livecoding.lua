@@ -234,7 +234,9 @@ function Image:verticalHueBar()
 	for y = 1, self.height do
 		local t = y / self.height
 
-		hsv.h = math.lerp(0, 360, t)
+		-- We lerp to 359.9999 since HSV { 360, 1.0, 1.0 } results in { r = 0, g = 0, b = 0 }
+		-- at the bottom of the hue picker which is a undesirable.
+		hsv.h = math.lerp(0, 359.9999, t)
 		local color = HSVtoRGB(hsv) --[[@as PremulImagePixelA]]
 		self:fillRow(y, color)
 	end
@@ -1055,8 +1057,6 @@ local function createPickerBlock(params, parent)
 	huePicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 		local x = math.clamp(e.relativeX, 1, mainPicker.width)
 		local y = math.clamp(e.relativeY, 1, mainPicker.height)
-		-- TODO: we get black at the bottom of HUE picker
-		tes3.messageBox("y = %s", y)
 		local color = hueBar:getPixel(x, y)
 		-- Make sure we don't change current alpha value in this picker.
 		color.a = currentColor.a
