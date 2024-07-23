@@ -1013,7 +1013,8 @@ local function createPickerBlock(params, parent)
 	return {
 		mainPicker = mainPicker,
 		huePicker = huePicker,
-		alphaPicker = alphaPicker
+		alphaPicker = alphaPicker,
+		currentPreview = currentPreview,
 	}
 end
 
@@ -1028,10 +1029,34 @@ local function channelToString(color)
 	return string.format("%.3f", color * 255)
 end
 
+--- Returns the channel value by reading `text` property of given TextInput. Returned value is in range of [0, 1].
+--- @param input tes3uiElement
+local function getInputValue(input)
+	-- Clearing the text input will set the color to 0.
+	local text = input.text
+	if text == "" then
+		text = '0'
+	end
+
+	-- Make sure the entered color will be clamped to [0, 255].
+	return math.clamp(tonumber(text), 0, 255) / 255
+end
+
+--- @param inputs table<channelType, tes3uiElement>
+local function getColorFromInputs(inputs)
+	--- @type ImagePixelArgument
+	local color = { r = 0.0, g = 0.0, b = 0.0, a = 0.0 }
+	for channel, input in pairs(inputs) do
+		color[channel] = getInputValue(input)
+	end
+	return color
+end
+
 --- @param params ColorPicker.new.params
 --- @param parent tes3uiElement
 --- @param channel channelType
-local function createValueLabel(params, parent, channel)
+--- @param onNewValueEntered function
+local function createValueLabel(params, parent, channel, onNewValueEntered)
 	local container = parent:createBlock({
 		id = tes3ui.registerID("ColorPicker_data_row_value_container")
 	})
@@ -1067,30 +1092,22 @@ local function createValueLabel(params, parent, channel)
 
 	-- Update color after new value was entered.
 	input:registerAfter(tes3.uiEvent.keyEnter, function(e)
-		-- Clearing the text input will set the color to 0.
-		local text = input.text
-		if text == "" then
-			text = '0'
-		end
-
-		-- Make sure the entered color will be clamped to [0, 255].
-		local color = math.clamp(tonumber(text), 0, 255) / 255
+		local color = getInputValue(input)
 		input.text = channelToString(color)
 		input.color = tes3ui.getPalette(tes3.palette.activeColor)
 		input:updateLayout()
+
+		-- Update other parts of the Color Picker
+		onNewValueEntered()
 	end)
 	return input
 end
 
 --- @param params ColorPicker.new.params
 --- @param parent tes3uiElement
-local function createDataBlock(params, parent)
-	local initialColor = params.initialColor
-	local pixelToString = formatPixelA
-	if not params.alpha then
-		pixelToString = formatPixel
-	end
-
+--- @param onNewColorEntered fun(newColor: ImagePixelA)
+--- @param onNewAlphaEntered? fun(newAlpha: ImagePixelA)
+local function createDataBlock(params, parent, onNewColorEntered, onNewAlphaEntered)
 	local dataRow = parent:createBlock({
 		id = tes3ui.registerID("ColorPicker_data_row_container")
 	})
@@ -1102,14 +1119,27 @@ local function createDataBlock(params, parent)
 
 	--- @type channelType[]
 	local channels = { 'r', 'g', 'b' }
-	if params.alpha then
-		table.insert(channels, 'a')
-	end
 
 	--- @type table<channelType, tes3uiElement>
 	local inputs = {}
+
+	local function updateColors()
+		local color = getColorFromInputs(inputs)
+		onNewColorEntered(color)
+	end
+
 	for _, channel in ipairs(channels) do
-		inputs[channel] = createValueLabel(params, dataRow, channel)
+		inputs[channel] = createValueLabel(params, dataRow, channel, updateColors)
+	end
+	if params.alpha then
+		assert(onNewAlphaEntered ~= nil, "Need to provide a onNewAlphaEntered.")
+		assert(type(onNewAlphaEntered) == "function", "onNewAlphaEntered needs to be a function.")
+
+		local function updateAlpha()
+			local color = getColorFromInputs(inputs)
+			onNewAlphaEntered(color)
+		end
+		inputs['a'] = createValueLabel(params, dataRow, 'a', updateAlpha)
 	end
 
 	return {
@@ -1119,7 +1149,6 @@ end
 
 --- @param params ColorPicker.new.params
 local function openMenu(params)
-	local initialColor = params.initialColor
 	local menu = tes3ui.findMenu(UIID.menu)
 	if menu then
 		return menu
@@ -1146,9 +1175,24 @@ local function openMenu(params)
 	bodyBlock.flowDirection = tes3.flowDirection.topToBottom
 
 	local pickers = createPickerBlock(params, bodyBlock)
+
+	--- @param newColor ImagePixelA
+	local function onNewColorEntered(newColor)
+		-- TODO: update position of indicators on hue and main pickers
+		hueChanged(newColor, pickers.currentPreview, pickers.mainPicker)
+	end
+
+	local onNewAlphaEntered
+	if params.alpha then
+		--- @param newColor ImagePixelA
+		onNewAlphaEntered = function(newColor)
+			colorSelected(newColor, pickers.currentPreview)
+		end
+	end
+
 	local dataBlock
 	if params.showDataRow then
-		dataBlock = createDataBlock(params, bodyBlock)
+		dataBlock = createDataBlock(params, bodyBlock, onNewColorEntered, onNewAlphaEntered)
 	end
 
 	tes3ui.enterMenuMode(UIID.menu)
