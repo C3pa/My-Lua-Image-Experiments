@@ -1,3 +1,5 @@
+local hsv = require("hsv")
+
 local Class = {}
 
 function Class:new(data)
