@@ -5,13 +5,14 @@
 tes3.messageBox("Hello World")
 mwse.log("Reset!")
 
+local ffi = require("ffi")
 local inspect = require("inspect")
 local logger = require("logging.logger")
 
 local Base = require("livecoding.Base")
 local cursorHelper = require("livecoding.cursorHelper")
 local headingMenu = require("livecoding.headingMenu")
--- local okhsv = dofile("livecoding.okhsv")
+local oklab = require("livecoding.oklab")
 
 -- Will export the test images as BMP files for inspecting. This will force all the image
 -- dimensions to 200x100.
@@ -19,77 +20,36 @@ local EXPORT_IMAGES_BMP = false
 
 
 
---------------------------------------
---- Color space conversion helpers ---
---------------------------------------
+
+ffi.cdef[[
+	typedef struct {
+		float r;
+		float g;
+		float b;
+	} RGB;
+
+	typedef struct {
+		float h;
+		float s;
+		float v;
+	} HSV;
+]]
+
+--- @class ffiImagePixel : ffi.cdata*
+--- @field r number Red in range [0, 1].
+--- @field g number Green in range [0, 1].
+--- @field b number Blue in range [0, 1].
+
+--- @class ffiHSV : ffi.cdata*
+--- @field h number Hue in range [0, 360)
+--- @field s number Saturation in range [0, 1]
+--- @field v number Value/brightness in range [0, 1]
 
 --- @class HSV
 --- @field h number Hue in range [0, 360)
 --- @field s number Saturation in range [0, 1]
 --- @field v number Value/brightness in range [0, 1]
 
---- Returned values are: H in range [0, 360), s [0, 1], v [0, 1]
---- @param rgb ImagePixel
---- @return HSV
-function RGBtoHSV(rgb)
-	local Cmax = math.max(rgb.r, rgb.g, rgb.b)
-	local Cmin = math.min(rgb.r, rgb.g, rgb.b)
-	local delta = Cmax - Cmin
-	local h
-	if rgb.r > rgb.g and rgb.r > rgb.b then
-		h = 60 * (((rgb.g - rgb.b) / delta) % 6)
-	elseif rgb.g > rgb.r and rgb.g > rgb.b then
-		h = 60 * (((rgb.b - rgb.r) / delta) + 2)
-	else
-		h = 60 * (((rgb.r - rgb.g) / delta) + 4)
-	end
-	local s
-	if Cmax == 0 then
-		s = 0
-	else
-		s = delta / Cmax
-	end
-
-	return {
-		h = h,
-		s = s,
-		v = Cmax,
-	}
-end
-
---- @param hsv HSV
---- @return ImagePixel
-function HSVtoRGB(hsv)
-	local H = hsv.h / 60
-	if math.isclose(H, 360) then
-		H = 0
-	end
-	local fract = H - math.floor(H)
-
-	local P = hsv.v * (1 - hsv.s)
-	local Q = hsv.v * (1 - hsv.s * fract)
-	local T = hsv.v * (1 - hsv.s * (1 - fract))
-	local rgb
-	if 0 <= H and H < 1 then
-		rgb = { r = hsv.v, g = T, b = P }
-	elseif 1 <= H and H < 2 then
-		rgb = { r = Q, g = hsv.v, b = P }
-	elseif 2 <= H and H < 3 then
-		rgb = { r = P, g = hsv.v, b = T }
-	elseif 3 <= H and H < 4 then
-		rgb = { r = P, g = Q, b = hsv.v }
-	elseif 4 <= H and H < 5 then
-		rgb = { r = T, g = P, b = hsv.v }
-	elseif 5 <= H and H < 6 then
-		rgb = { r = hsv.v, g = P, b = Q }
-	else
-		rgb = { r = 0, g = 0, b = 0 }
-	end
-
-	return rgb
-end
-
--- HSVtoRGB = okhsv.okhsv_to_srgb
 
 --- @class ImagePixel
 --- @field r number Red in range [0, 1].
@@ -104,19 +64,32 @@ end
 --- Pixel storing the color in premultiplied format.
 --- @class PremulImagePixelA : ImagePixelA
 
---- @alias ImageData PremulImagePixelA[]
+--- @alias ImageData ffiImagePixel[]
 
 --- An image helper class that stores RGBA color in premultiplied alpha format.
 --- @class Image
 --- @field width integer
 --- @field height integer
 --- @field data ImageData
+--- @field alphas number[]
 local Image = Base:new()
 
 --- @class Image.new.data
 --- @field width integer **Remember, to use it as an engine texture use power of 2 dimensions.**
 --- @field height integer **Remember, to use it as an engine texture use power of 2 dimensions.**
 --- @field data ImageData?
+--- @field alphas number[]?
+
+--- @alias ImagePixelArray number[] # A 1-indexed array of 3 rgb colors
+--- @alias ffiImagePixelInit ImagePixelArray|ImagePixel
+
+--- @alias hsvArray number[] # A 1-indexed array of 3 hsv values
+--- @alias ffiHSVInit hsvArray|HSV
+
+local ffiPixel = ffi.typeof("RGB") --[[@as fun(init: ffiImagePixelInit?): ffiImagePixel]]
+local ffiHSV = ffi.typeof("HSV") --[[@as fun(init: ffiHSVInit?): ffiHSV]]
+-- Creates a 0-indexed array of ffiImagePixel
+local ffiPixelArray = ffi.typeof("RGB[?]") --[[@as fun(nelem: integer, init: ffiImagePixelInit[]?): ffiImagePixel[]=]]
 
 --- @param data Image.new.data
 --- @return Image
@@ -130,12 +103,20 @@ function Image:new(data)
 		data.height = 100
 	end
 
-	if not t.data then
-		t.data = {}
-		for y = 1, t.height do
-			local offset = (y - 1) * t.width
+	local size = t.width * t.height
+	if t.data == nil then
+		t.data = ffiPixelArray(size + 1)
+	-- Convert given table initializer into a C-array.
+	elseif not ffi.istype("RGB[?]", t.data) then
+		t.data = ffiPixelArray(size + 1, t.data)
+	end
+
+	if not t.alphas then
+		t.alphas = table.new(size, 0)
+		for y = 0, t.height - 1 do
+			local offset = y * t.width
 			for x = 1, t.width do
-				t.data[offset + x] = { r = 0, g = 0, b = 0, a = 1 }
+				t.alphas[offset + x] = 1.0
 			end
 		end
 	end
@@ -146,115 +127,121 @@ end
 
 --- @param y number
 function Image:getOffset(y)
-	return (y - 1) * self.width
+	return y * self.width
 end
 
 --- Returns a copy of a pixel with given coordinates.
 --- @param x integer Horizontal coordinate
 --- @param y integer Vertical coordinate
---- @return PremulImagePixelA
 function Image:getPixel(x, y)
-	local offset = self:getOffset(y)
-	return table.copy(self.data[offset + x])
+	local offset = self:getOffset(y - 1)
+	return self.data[offset + x]
 end
 
 --- @param x integer Horizontal coordinate
 --- @param y integer Vertical coordinate
---- @param color PremulImagePixelA
+--- @param color ffiImagePixel
 function Image:setPixel(x, y, color)
-	local offset = self:getOffset(y)
+	local offset = self:getOffset(y - 1)
 	self.data[offset + x] = color
 end
 
 --- Modifies the Image in place.
 --- @param data ImageData
 function Image:fill(data)
-	for y = 1, self.height do
-		local offset = self:getOffset(y)
-		for x = 1, self.width do
-			table.copy(data[offset + x], self.data[offset + x])
-		end
-	end
+	self.data = data
 end
 
---- Converts `ImagePixelA` to `PremulImagePixelA`.
---- @param pixel ImagePixelA
-local function premultiply(pixel)
-	pixel.r = pixel.r * pixel.a
-	pixel.g = pixel.g * pixel.a
-	pixel.b = pixel.b * pixel.a
+--- @param pixel ffiImagePixel
+--- @param alpha number
+local function premultiply(pixel, alpha)
+	pixel.r = pixel.r * alpha
+	pixel.g = pixel.g * alpha
+	pixel.b = pixel.b * alpha
 end
 
 --- Modifies the Image in place. Will premultiply the color channels with alpha value.
---- @param color ImagePixelArgument
-function Image:fillColor(color)
-	color.a = color.a or 1
-	premultiply(color)
-	--- @cast color PremulImagePixelA
+--- @param color ffiImagePixel
+--- @param alpha number?
+function Image:fillColor(color, alpha)
+	alpha = alpha or 1
+	premultiply(color, alpha)
 
-	for y = 1, self.height do
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			table.copy(color, self.data[offset + x])
+			self.data[offset + x] = color
+			self.alphas[offset + x] = alpha
 		end
 	end
 end
 
 --- Modifies the Image in place. Works with **premultiplied** color.
 --- @param rowIndex integer
---- @param color PremulImagePixelA
-function Image:fillRow(rowIndex, color)
-	color.a = color.a or 1
+--- @param color ffiImagePixel
+--- @param alpha number?
+function Image:fillRow(rowIndex, color, alpha)
+	alpha = alpha or 1
 
-	local offset = self:getOffset(rowIndex)
+	local offset = self:getOffset(rowIndex - 1)
 	for x = 1, self.width do
-		table.copy(color, self.data[offset + x])
+		self.data[offset + x] = color
+		self.alphas[offset + x] = alpha
 	end
 end
 
 --- Modifies the Image in place. Works with **premultiplied** color.
 --- @param columnIndex integer
---- @param color PremulImagePixelA
-function Image:fillColumn(columnIndex, color)
-	color.a = color.a or 1
+--- @param color ffiImagePixel
+--- @param alpha number?
+function Image:fillColumn(columnIndex, color, alpha)
+	alpha = alpha or 1
 
-	for y = 1, self.height do
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
-		table.copy(color, self.data[offset + columnIndex])
+		self.data[offset + columnIndex] = color
+		self.alphas[offset + columnIndex] = alpha
 	end
 end
 
 --- Modifies the Image in place. Fills the image into a vertical hue bar. HSV value at the top is:
---- `{ H = 0, s = 1.0, v = 1.0 }`, at the bottom `{ H = 360, s = 1.0, v = 1.0 }`
+--- `{ H = 0, s = 0.7, v = 0.85 }`, at the bottom `{ H = 360, s = 0.7, v = 0.85 }`
 function Image:verticalHueBar()
-	--- @type HSV
-	local hsv = { h = 0, s = 0.8, v = 0.7 }
+	local hsv = ffiHSV({ 0, 0.7, 0.85 })
+
+	-- Lower level fill method will account for the 0-indexing of the underlying data array.
 	for y = 1, self.height do
 		local t = y / self.height
 
 		-- We lerp to 359.9999 since HSV { 360, 1.0, 1.0 } results in { r = 0, g = 0, b = 0 }
 		-- at the bottom of the hue picker which is a undesirable.
 		hsv.h = math.lerp(0, 359.9999, t)
-		local color = HSVtoRGB(hsv) --[[@as PremulImagePixelA]]
+		local color = oklab.hsvlib_hsv_to_srgb(hsv)
 		self:fillRow(y, color)
 	end
 end
 
 --- @param hue number Hue in range [0, 360)
 function Image:mainPicker(hue)
-	--- @type HSV
-	local hsv = { h = hue, s = 0.0, v = 0.0 }
-	for y = 1, self.height do
+	local hsv = ffiHSV({ hue, 0.0, 0.0 })
+
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		hsv.v = 1 - y / self.height
 
 		for x = 1, self.width do
 			hsv.s = x / self.width
-			local rgb = HSVtoRGB(hsv) --[[@as PremulImagePixelA]]
-			rgb.a = 1.0
-			table.copy(rgb, self.data[offset + x])
+			local color = oklab.hsvlib_hsv_to_srgb(hsv)
+			self.data[offset + x] = color
 		end
 	end
+end
+
+--- @param pixel ImagePixelA
+local function premultiplyLuaPixel(pixel)
+	pixel.r = pixel.r * pixel.a
+	pixel.g = pixel.g * pixel.a
+	pixel.b = pixel.b * pixel.a
 end
 
 --- Modifies the Image in place. Will premultiply the color channels with alpha value.
@@ -263,20 +250,22 @@ end
 function Image:horizontalGradient(leftColor, rightColor)
 	leftColor.a = leftColor.a or 1
 	rightColor.a = rightColor.a or 1
-	premultiply(leftColor)
-	premultiply(rightColor)
+	premultiplyLuaPixel(leftColor)
+	premultiplyLuaPixel(rightColor)
 	--- @cast leftColor PremulImagePixelA
 	--- @cast rightColor PremulImagePixelA
 
 	for x = 1, self.width do
 		local t = x / self.width
-		local color = {
-			r = math.lerp(leftColor.r, rightColor.r, t),
-			g = math.lerp(leftColor.g, rightColor.g, t),
-			b = math.lerp(leftColor.b, rightColor.b, t),
-			a = math.lerp(leftColor.a, rightColor.a, t),
-		}
-		self:fillColumn(x, color)
+		local color = ffiPixel({
+			math.lerp(leftColor.r, rightColor.r, t),
+			math.lerp(leftColor.g, rightColor.g, t),
+			math.lerp(leftColor.b, rightColor.b, t),
+		})
+		self:fillColumn(
+			x, color,
+			math.lerp(leftColor.a, rightColor.a, t)
+		)
 	end
 end
 
@@ -286,20 +275,24 @@ end
 function Image:verticalGradient(topColor, bottomColor)
 	topColor.a = topColor.a or 1
 	bottomColor.a = bottomColor.a or 1
-	premultiply(topColor)
-	premultiply(bottomColor)
+	premultiplyLuaPixel(topColor)
+	premultiplyLuaPixel(bottomColor)
 	--- @cast topColor PremulImagePixelA
 	--- @cast bottomColor PremulImagePixelA
 
-	for y = 0, self.height do
+	-- Lower level fillRow will account for the 0-based indexing of the underlying data array.
+	for y = 1, self.height do
 		local t = y / self.height
-		local color = {
-			r = math.lerp(topColor.r, bottomColor.r, t),
-			g = math.lerp(topColor.g, bottomColor.g, t),
-			b = math.lerp(topColor.b, bottomColor.b, t),
-			a = math.lerp(topColor.a, bottomColor.a, t),
-		}
-		self:fillRow(y, color)
+
+		local color = ffiPixel({
+			math.lerp(topColor.r, bottomColor.r, t),
+			math.lerp(topColor.g, bottomColor.g, t),
+			math.lerp(topColor.b, bottomColor.b, t),
+		})
+		self:fillRow(
+			y, color,
+			math.lerp(topColor.a, bottomColor.a, t)
+		)
 	end
 end
 
@@ -323,27 +316,39 @@ end
 --- @param darkGray PremulImagePixelA?
 function Image:toCheckerboard(size, lightGray, darkGray)
 	size = size or 16
-	--- @type PremulImagePixelA
-	local lightGray = lightGray or { r = 0.7, g = 0.7, b = 0.7, a = 1 }
-	--- @type PremulImagePixelA
-	local darkGray = darkGray or { r = 0.5, g = 0.5, b = 0.5, a = 1 }
 	local doubleSize = 2 * size
+	local light = ffiPixel({ 0.7, 0.7, 0.7 })
+	if lightGray then
+		-- TODO: check if we can assign to C struct this way
+		light = lightGray
+		-- light.r = lightGray.r
+		-- light.g = lightGray.g
+		-- light.b = lightGray.b
+	end
+	local dark = ffiPixel({ 0.5, 0.5, 0.5 })
+	if darkGray then
+		-- TODO: check if we can assign to C struct this way
+		dark = darkGray
+		-- dark.r = darkGray.r
+		-- dark.g = darkGray.g
+		-- dark.b = darkGray.b
+	end
 
-	for y = 1, self.height do
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			-- -1 is compensation for indexing starting at 1.
-			if (((y - 1) % doubleSize) < size) then
+			if ((y % doubleSize) < size) then
+				-- -1 is compensation for indexing starting at 1.
 				if (((x - 1) % doubleSize) < size) then
-					table.copy(lightGray, self.data[offset + x])
+					self.data[offset + x] = light
 				else
-					table.copy(darkGray, self.data[offset + x])
+					self.data[offset + x] = dark
 				end
 			else
 				if (((x - 1) % doubleSize) < size) then
-					table.copy(darkGray, self.data[offset + x])
+					self.data[offset + x] = dark
 				else
-					table.copy(lightGray, self.data[offset + x])
+					self.data[offset + x] = light
 				end
 			end
 
@@ -352,18 +357,26 @@ function Image:toCheckerboard(size, lightGray, darkGray)
 end
 
 function Image:copy()
-	local data = table.new(self.height * self.width, 0)
-	for y = 1, self.height do
+	local size = self.height * self.width + 1
+	local data = ffiPixelArray(size)
+	-- TODO: why this for loop?
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			data[offset + x] = table.copy(self.data[offset + x])
+			data[offset + x] = self.data[offset + x]
 		end
 	end
+	ffi.copy(data, self.data, ffi.sizeof("RGB[?]", size))
+
+	local alphas = table.new(size, 0)
+	table.copy(self.alphas, alphas)
+
 
 	local new = Image:new({
 		height = self.height,
 		width = self.width,
 		data = data,
+		alphas = alphas,
 	})
 
 	return new
@@ -441,17 +454,30 @@ function Image:blend(image, coeff, type, copy)
 	assert(sameHeight, "Images must be of same height.")
 
 	local data = self.data
+	local alphas = self.alphas
 	--- @type Image|nil
 	local new
 	if copy then
 		new = self:copy()
 		data = new.data
+		alphas = new.alphas
 	end
 	local blend = blend[type]
-	for y = 1, self.height do
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			data[offset + x] = blend(data[offset + x], image.data[offset + x], coeff)
+			-- We only do "over" blending in this version
+			local alpha2 = image.alphas[offset + x]
+			local inverseA2 = 1 - alpha2
+			local pixel1 = data[offset + x]
+			local pixel2 = image.data[offset + x]
+			pixel1.r = pixel2.r + pixel1.r * inverseA2
+			pixel1.g = pixel2.g + pixel1.g * inverseA2
+			pixel1.b = pixel2.b + pixel1.b * inverseA2
+			data[offset + x] = pixel1
+			alphas[offset + x] = alpha2 + alphas[offset + x] * inverseA2
+			-- TODO:
+			-- data[offset + x] = blend(data[offset + x], image.data[offset + x], coeff)
 		end
 	end
 	if copy then
@@ -467,7 +493,7 @@ function Image:toPixelBufferFloat()
 	local buffer = table.new(size * niPixelData_BYTES_PER_PIXEL, 0)
 	local stride = 0
 
-	for y = 1, self.height do
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
 			local pixel = self.data[offset + x]
@@ -475,7 +501,7 @@ function Image:toPixelBufferFloat()
 			buffer[stride + 2] = pixel.g
 			buffer[stride + 3] = pixel.b
 			-- buffer[stride + 4] = 1
-			buffer[stride + 4] = pixel.a
+			buffer[stride + 4] = self.alphas[offset + x]
 			stride = stride + 4
 		end
 	end
@@ -489,7 +515,7 @@ function Image:toPixelBufferByte()
 	local buffer = table.new(size * niPixelData_BYTES_PER_PIXEL, 0)
 	local stride = 0
 
-	for y = 1, self.height do
+	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
 			local pixel = self.data[offset + x]
@@ -497,7 +523,7 @@ function Image:toPixelBufferByte()
 			buffer[stride + 2] = pixel.g * 255
 			buffer[stride + 3] = pixel.b * 255
 			-- buffer[stride + 4] = 255
-			buffer[stride + 4] = pixel.a * 255
+			buffer[stride + 4] = self.alphas[offset + x] * 255
 			stride = stride + 4
 		end
 	end
@@ -557,11 +583,11 @@ function Image:saveBMP(filename)
 		writeBytes(file, 0x00, 0x00, 0x00, 0x00)
 	end
 
-	for y = self.height, 1, -1 do
+	for y = self.height - 1, 0, -1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
 			local pixel = self.data[offset + x]
-			local alpha = pixel.a
+			local alpha = self.alphas[offset + x]
 			local b = math.round(255 * pixel.b)
 			local g = math.round(255 * pixel.g)
 			local r = math.round(255 * pixel.r)
@@ -644,6 +670,10 @@ if EXPORT_IMAGES_BMP then
 	mainImage:saveBMP("imgMainImage+blackGradient.bmp")
 	hueBar:saveBMP("imgHueBar.bmp")
 	alphaBar:saveBMP("imgAlphaBar.bmp")
+	tes3.messageBox("Images sucessfuly exported! Since these have wrong dimensions, color picker won't be opened. \z
+		Disable `EXPORT_IMAGES_BMP` to open the color picker!"
+	)
+	return
 end
 
 
@@ -661,20 +691,16 @@ for _, texture in pairs(textures) do
 	texture.isStatic = false
 end
 
---- @param color ImagePixelArgument
+--- @param color ffiImagePixel
 local function updateMainPickerImage(color)
-	color = table.copy(color)
-	-- Main picker shouldn't be transparent
-	color.a = 1.0
-	local hsv = RGBtoHSV(color)
+	local hsv = oklab.hsvlib_srgb_to_hsv(color)
 	mainImage:mainPicker(hsv.h)
-	-- mainImage:horizontalColorGradient(color)
-	-- mainImage:blend(blackGradient, 0.5, "over")
 end
 
---- @param color ImagePixelArgument
-local function updatePreviewImage(color)
-	previewForeground:fillColor(color)
+--- @param color ffiImagePixel
+--- @param alpha number
+local function updatePreviewImage(color, alpha)
+	previewForeground:fillColor(color, alpha)
 	previewForeground = previewCheckers:blend(previewForeground, 0.5, "over", true)
 end
 
@@ -699,26 +725,11 @@ livecoding.registerEvent(tes3.event.keyDown, function(e)
 end)
 
 --- @class ColorPicker.new.params
+--- @field initialColor ImagePixel
+--- @field initialAlpha number?
 --- @field alpha boolean? If true the picker will also allow picking an alpha value.
 --- @field showOriginal boolean? If true the picker will show original color below the currently picked color.
 --- @field showDataRow boolean? If true the picker will show RGB(A) values of currently picked color in a label below the picker.
---- @field initialColor PremulImagePixelA
-
-
---- @param pixel PremulImagePixelA
-local function formatPixelA(pixel)
-	return string.format(
-		"R: %.0f %%, G: %.0f %%, B: %.0f %%, A: %.0f %%",
-		pixel.r * 100, pixel.g * 100, pixel.b * 100, pixel.a * 100
-	)
-end
---- @param pixel PremulImagePixelA
-local function formatPixel(pixel)
-	return string.format(
-		"R: %.0f %%, G: %.0f %%, B: %.0f %%",
-		pixel.r * 100, pixel.g * 100, pixel.b * 100
-	)
-end
 
 -- TODO: these could use localization.
 local strings = {
@@ -732,19 +743,19 @@ local strings = {
 
 
 --- @param previews ColorPickerPreviewsTable
---- @param newColor ImagePixelA
-local function updatePreview(previews, newColor)
-	newColor = table.copy(newColor) --[[@as ImagePixelA]]
+--- @param newColor ffiImagePixel
+--- @param alpha number
+local function updatePreview(previews, newColor, alpha)
 	previews.standardPreview.color = { newColor.r, newColor.g, newColor.b }
 	previews.standardPreview:updateLayout()
-	updatePreviewImage(newColor)
+	updatePreviewImage(newColor, alpha)
 	previews.checkersPreview.texture.pixelData:setPixelsFloat(previewForeground:toPixelBufferFloat())
 end
 
 --- @param mainPicker tes3uiElement
---- @param newColor ImagePixelA
+--- @param newColor ffiImagePixel
 local function updateMainPicker(mainPicker, newColor)
-	newColor = table.copy(newColor) --[[@as ImagePixelA]]
+	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
 	updateMainPickerImage(newColor)
 	-- mainPicker.imageFilter = false
 	mainPicker.texture.pixelData:setPixelsFloat(mainImage:toPixelBufferFloat())
@@ -752,8 +763,8 @@ local function updateMainPicker(mainPicker, newColor)
 	-- mainPicker.imageFilter = false
 end
 
---- @type PremulImagePixelA
-local currentColor
+--- @type ffiImagePixel, number
+local currentColor, currentAlpha
 
 
 --- @alias IndicatorID
@@ -780,14 +791,14 @@ local function getIndicators()
 end
 
 --- @param mainIndicator tes3uiElement
---- @param hsv HSV
+--- @param hsv ffiHSV
 local function updateMainIndicatorPosition(mainIndicator, hsv)
 	mainIndicator.absolutePosAlignX = hsv.s
-	mainIndicator.absolutePosAlignY = hsv.v
+	mainIndicator.absolutePosAlignY = 1 - hsv.v
 end
 
 --- @param hueIndicator tes3uiElement
---- @param hsv HSV
+--- @param hsv ffiHSV
 local function updateHueIndicatorPosition(hueIndicator, hsv)
 	local y = hsv.h / 360
 	hueIndicator.absolutePosAlignY = y
@@ -799,8 +810,10 @@ local function updateAlphaIndicatorPosition(alphaIndicator, alpha)
 	alphaIndicator.absolutePosAlignY = 1 - alpha
 end
 
---- @param hsv HSV
-local function updateIndicatorPositions(hsv, alpha)
+--- @param newColor ffiImagePixel
+--- @param alpha number?
+local function updateIndicatorPositions(newColor, alpha)
+	local hsv = oklab.hsvlib_srgb_to_hsv(newColor)
 	local indicators = getIndicators()
 	updateMainIndicatorPosition(indicators.main, hsv)
 	updateHueIndicatorPosition(indicators.hue, hsv)
@@ -830,38 +843,52 @@ local function channelToString(color)
 	return string.format("%.3f", color * 255)
 end
 
---- @param newColor ImagePixelA
-local function updateValueInputs(newColor)
+--- @param newColor ffiImagePixel
+--- @param alpha number
+local function updateValueInputs(newColor, alpha)
+	-- Make sure we don't get NaNs in color text inputs. We clamp alpha here.
+	alpha = math.clamp(alpha, 0.0000001, 1.0)
+	-- We store color premultiplied by alpha. Let's undo it to not expose this to the user via the UI.
+	newColor.r = newColor.r / alpha
+	newColor.g = newColor.g / alpha
+	newColor.b = newColor.b / alpha
 	local inputs = getValueInputs()
 	if not inputs then return end
 	for channel, input in pairs(inputs) do
-		input.text = channelToString(newColor[channel])
+		if channel == 'a' then
+			input.text = channelToString(alpha)
+		else
+			input.text = channelToString(newColor[channel])
+		end
 	end
 end
 
---- @param newColor ImagePixelA
+--- @param newColor ffiImagePixel
+--- @param alpha number
 --- @param previews ColorPickerPreviewsTable
-local function colorSelected(newColor, previews)
-	currentColor = table.copy(newColor) --[[@as PremulImagePixelA]]
-	updatePreview(previews, newColor)
-	updateValueInputs(newColor)
+local function colorSelected(newColor, alpha, previews)
+	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
+	updatePreview(previews, newColor, alpha)
+	updateValueInputs(newColor, alpha)
 end
 
---- @param newColor ImagePixelA
+--- @param newColor ffiImagePixel
+--- @param alpha number
 --- @param previews ColorPickerPreviewsTable
 --- @param mainPicker tes3uiElement
-local function hueChanged(newColor, previews, mainPicker)
-	currentColor = table.copy(newColor) --[[@as PremulImagePixelA]]
-	updatePreview(previews, newColor)
+local function hueChanged(newColor, alpha, previews, mainPicker)
+	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
+	updatePreview(previews, newColor, alpha)
 	updateMainPicker(mainPicker, newColor)
-	updateValueInputs(newColor)
+	updateValueInputs(newColor, alpha)
 end
 
 --- @param parent tes3uiElement
---- @param color PremulImagePixelA
+--- @param color ffiImagePixel
+--- @param alpha number
 --- @param texture niSourceTexture
 --- @return ColorPickerPreviewsTable
-local function createPreviewElement(parent, color, texture)
+local function createPreviewElement(parent, color, alpha, texture)
 	local standardPreview = parent:createRect({
 		id = tes3ui.registerID("ColorPicker_color_preview_left"),
 		color = { color.r, color.g, color.b },
@@ -884,7 +911,7 @@ local function createPreviewElement(parent, color, texture)
 	checkersPreview.borderRight = 8
 	checkersPreview.borderBottom = 8
 
-	updatePreviewImage(color)
+	updatePreviewImage(color, alpha)
 	checkersPreview.texture.pixelData:setPixelsFloat(previewForeground:toPixelBufferFloat())
 
 	return {
@@ -894,13 +921,14 @@ local function createPreviewElement(parent, color, texture)
 end
 
 --- @param parent tes3uiElement
---- @param color PremulImagePixelA
+--- @param color ffiImagePixel
+--- @param alpha number
 --- @param label string
 --- @param onClickCallback? fun(e: tes3uiEventData)
 --- @return ColorPickerPreviewsTable
-local function createPreview(parent, color, label, onClickCallback)
-	color = table.copy(color)
-
+local function createPreview(parent, color, alpha, label, onClickCallback)
+	-- We don't want to create references to color.
+	local color = ffiPixel({ color.r, color.g, color.b })
 	local outerContainer = parent:createBlock({ id = tes3ui.registerID("ColorPicker_color_preview_outer_container") })
 	outerContainer.flowDirection = tes3.flowDirection.topToBottom
 	outerContainer.autoWidth = true
@@ -918,7 +946,7 @@ local function createPreview(parent, color, label, onClickCallback)
 	innerContainer.autoHeight = true
 
 	local previewTexture = textures["preview" .. label]
-	local previews = createPreviewElement(innerContainer, color, previewTexture)
+	local previews = createPreviewElement(innerContainer, color, alpha, previewTexture)
 
 	if onClickCallback then
 		innerContainer:register(tes3.uiEvent.mouseDown, function(e)
@@ -931,6 +959,12 @@ end
 --- @param params ColorPicker.new.params
 --- @param parent tes3uiElement
 local function createPickerBlock(params, parent)
+	local initialColor = ffiPixel({
+		params.initialColor.r,
+		params.initialColor.g,
+		params.initialColor.b,
+	})
+
 	local mainRow = parent:createBlock({
 		id = tes3ui.registerID("ColorPicker_picker_row_container")
 	})
@@ -940,7 +974,7 @@ local function createPickerBlock(params, parent)
 	mainRow.widthProportional = 1.0
 	mainRow.paddingAllSides = 4
 
-	local initialHSV = RGBtoHSV(params.initialColor)
+	local initialHSV = oklab.hsvlib_srgb_to_hsv(initialColor)
 	local mainIndicatorInitialAbsolutePosAlignX = initialHSV.s
 	local mainIndicatorInitialAbsolutePosAlignY = 1 - initialHSV.v
 	local hueIndicatorInitialAbsolutePosAlignY = initialHSV.h / 360
@@ -955,7 +989,7 @@ local function createPickerBlock(params, parent)
 	mainPicker.texture = textures.main
 	mainPicker.imageFilter = false
 
-	updateMainPickerImage(params.initialColor)
+	updateMainPickerImage(initialColor)
 
 	mainPicker.texture.pixelData:setPixelsFloat(mainImage:toPixelBufferFloat())
 	mainPicker:register(tes3.uiEvent.mouseDown, function(e)
@@ -1025,7 +1059,7 @@ local function createPickerBlock(params, parent)
 		})
 		alphaIndicator.color = INDICATOR_COLOR
 		alphaIndicator.absolutePosAlignX = 0.5
-		alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
+		alphaIndicator.absolutePosAlignY = 1 - params.initialAlpha
 		alphaIndicator:setLuaData("indicatorID", "alpha")
 	end
 
@@ -1034,16 +1068,16 @@ local function createPickerBlock(params, parent)
 	previewContainer.autoWidth = true
 	previewContainer.autoHeight = true
 
-	local currentPreview = createPreview(previewContainer, params.initialColor, "Current")
+	local currentPreview = createPreview(previewContainer, initialColor, params.initialAlpha, "Current")
 
 	-- Implement picking behavior
 	mainPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 		local x = math.clamp(e.relativeX, 1, mainPicker.width)
 		local y = math.clamp(e.relativeY, 1, mainPicker.height)
-		local color = mainImage:getPixel(x, y)
-		-- Make sure we don't change current alpha value in this picker.
-		color.a = currentColor.a
-		colorSelected(color, currentPreview)
+		local pickedColor = mainImage:getPixel(x, y)
+		-- Make sure we don't create reference to the pixel from the mainImage.
+		currentColor = ffiPixel({ pickedColor.r, pickedColor.g, pickedColor.b })
+		colorSelected(currentColor, currentAlpha, currentPreview)
 
 		mainIndicator.absolutePosAlignX = x / mainPicker.width
 		mainIndicator.absolutePosAlignY = y / mainPicker.height
@@ -1051,12 +1085,12 @@ local function createPickerBlock(params, parent)
 	end)
 
 	huePicker:register(tes3.uiEvent.mouseStillPressed, function(e)
-		local x = math.clamp(e.relativeX, 1, mainPicker.width)
-		local y = math.clamp(e.relativeY, 1, mainPicker.height)
-		local color = hueBar:getPixel(x, y)
-		-- Make sure we don't change current alpha value in this picker.
-		color.a = currentColor.a
-		hueChanged(color, currentPreview, mainPicker)
+		local x = math.clamp(e.relativeX, 1, huePicker.width)
+		local y = math.clamp(e.relativeY, 1, huePicker.height)
+		local pickedColor = hueBar:getPixel(x, y)
+		-- Make sure we don't create reference to the pixel from the hueBar.
+		currentColor = ffiPixel({ pickedColor.r, pickedColor.g, pickedColor.b })
+		hueChanged(currentColor, currentAlpha, currentPreview, mainPicker)
 
 		hueIndicator.absolutePosAlignY = y / huePicker.height
 		mainRow:getTopLevelMenu():updateLayout()
@@ -1065,10 +1099,9 @@ local function createPickerBlock(params, parent)
 	if params.alpha then
 		alphaPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 			local y = math.clamp(e.relativeY / alphaPicker.height, 0, 1)
-			local newColor = table.copy(currentColor)
-			newColor.a = 1 - y
-			colorSelected(newColor, currentPreview)
+			currentAlpha = 1 - y
 
+			colorSelected(currentColor, currentAlpha, currentPreview)
 			alphaIndicator.absolutePosAlignY = y
 			mainRow:getTopLevelMenu():updateLayout()
 		end)
@@ -1077,20 +1110,22 @@ local function createPickerBlock(params, parent)
 	if params.showOriginal then
 		--- @param e tes3uiEventData
 		local function resetColor(e)
-			hueChanged(params.initialColor, currentPreview, mainPicker)
+			currentColor = ffiPixel({ params.initialColor.r, params.initialColor.g, params.initialColor.b })
+			hueChanged(currentColor, params.initialAlpha, currentPreview, mainPicker)
 
 			mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
 			mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
 			hueIndicator.absolutePosAlignY = hueIndicatorInitialAbsolutePosAlignY
 			if params.alpha then
-				alphaIndicator.absolutePosAlignY = 1 - params.initialColor.a
+				alphaIndicator.absolutePosAlignY = 1 - params.initialAlpha
+				currentAlpha = params.initialAlpha
 			end
 			mainRow:getTopLevelMenu():updateLayout()
 		end
-		createPreview(previewContainer, params.initialColor, "Original", resetColor)
+		createPreview(previewContainer, initialColor, params.initialAlpha, "Original", false, resetColor)
 	end
 
-	colorSelected(params.initialColor, currentPreview)
+	colorSelected(initialColor, params.initialAlpha, currentPreview)
 	mainRow:getTopLevelMenu():updateLayout()
 	mainPicker.imageFilter = false
 	huePicker.imageFilter = false
@@ -1124,21 +1159,22 @@ local function getInputValue(input)
 	return math.clamp(tonumber(text), 0, 255) / 255
 end
 
+--- It will return given color in range of [0, 1] in non-premultiplied format.
 --- @param inputs table<channelType, tes3uiElement>
 local function getColorFromInputs(inputs)
-	--- @type ImagePixelArgument
-	local color = { r = 0.0, g = 0.0, b = 0.0, a = 0.0 }
+	--- @type ImagePixelA
+	local color = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
 	for channel, input in pairs(inputs) do
 		color[channel] = getInputValue(input)
 	end
 	return color
 end
 
---- @param params ColorPicker.new.params
 --- @param parent tes3uiElement
 --- @param channel channelType
+--- @param initialValue number
 --- @param onNewValueEntered function
-local function createValueLabel(params, parent, channel, onNewValueEntered)
+local function createValueLabel(parent, channel, initialValue, onNewValueEntered)
 	local container = parent:createBlock({
 		id = tes3ui.registerID("ColorPicker_data_row_value_container")
 	})
@@ -1157,7 +1193,7 @@ local function createValueLabel(params, parent, channel, onNewValueEntered)
 	local input = container:createTextInput({
 		id = tes3ui.registerID("ColorPicker_data_row_value_input_" .. channel),
 		numeric = true,
-		text = channelToString(params.initialColor[channel]),
+		text = channelToString(initialValue),
 	})
 	input.borderLeft = 4
 	input.color = tes3ui.getPalette(tes3.palette.activeColor)
@@ -1188,8 +1224,8 @@ end
 
 --- @param params ColorPicker.new.params
 --- @param parent tes3uiElement
---- @param onNewColorEntered fun(newColor: ImagePixelA)
---- @param onNewAlphaEntered? fun(newAlpha: ImagePixelA)
+--- @param onNewColorEntered fun(newColor: ffiImagePixel, alpha: number)
+--- @param onNewAlphaEntered? fun(newColor: ffiImagePixel, alpha: number)
 local function createDataBlock(params, parent, onNewColorEntered, onNewAlphaEntered)
 	local dataRow = parent:createBlock({
 		id = tes3ui.registerID("ColorPicker_data_row_container")
@@ -1208,11 +1244,16 @@ local function createDataBlock(params, parent, onNewColorEntered, onNewAlphaEnte
 
 	local function updateColors()
 		local color = getColorFromInputs(inputs)
-		onNewColorEntered(color)
+		local pixel = ffiPixel({ color.r, color.g, color.b })
+		currentColor = pixel
+		currentAlpha = color.a
+		onNewColorEntered(pixel, color.a)
 	end
 
 	for _, channel in ipairs(channels) do
-		inputs[channel] = createValueLabel(params, dataRow, channel, updateColors)
+		-- We store color premultiplied by alpha. Don't expose this to the user, undo it in the UI.
+		local initialColor = params.initialColor[channel] / params.initialAlpha
+		inputs[channel] = createValueLabel(dataRow, channel, initialColor, updateColors)
 	end
 	if params.alpha then
 		assert(onNewAlphaEntered ~= nil, "Need to provide a onNewAlphaEntered.")
@@ -1220,9 +1261,12 @@ local function createDataBlock(params, parent, onNewColorEntered, onNewAlphaEnte
 
 		local function updateAlpha()
 			local color = getColorFromInputs(inputs)
-			onNewAlphaEntered(color)
+			local pixel = ffiPixel({ color.r, color.g, color.b })
+			currentColor = pixel
+			currentAlpha = color.a
+			onNewAlphaEntered(pixel, color.a)
 		end
-		inputs['a'] = createValueLabel(params, dataRow, 'a', updateAlpha)
+		inputs['a'] = createValueLabel(dataRow, 'a', params.initialAlpha, updateAlpha)
 	end
 
 	return {
@@ -1236,10 +1280,13 @@ local function openMenu(params)
 	if menu then
 		return menu
 	end
-	if not params.alpha then
-		params.initialColor.a = 1
+
+	if (not params.alpha) or (not params.initialAlpha) then
+		params.initialAlpha = 1
 	end
 
+	currentColor = ffiPixel({ params.initialColor.r, params.initialColor.g, params.initialColor.b })
+	currentAlpha = params.initialAlpha
 	local x, y = cursorHelper.getCursorCoorsMenuRelative()
 
 	local context = headingMenu.create({
@@ -1263,28 +1310,26 @@ local function openMenu(params)
 
 	local pickers = createPickerBlock(params, bodyBlock)
 
-	--- @param newColor ImagePixelA
-	local function onNewColorEntered(newColor)
-		hueChanged(newColor, pickers.currentPreview, pickers.mainPicker)
-		local hsv = RGBtoHSV(newColor)
-		updateIndicatorPositions(hsv, newColor.a)
+	--- @param newColor ffiImagePixel
+	--- @param alpha number
+	local function onNewColorEntered(newColor, alpha)
+		hueChanged(newColor, alpha, pickers.currentPreview, pickers.mainPicker)
+		updateIndicatorPositions(newColor, alpha)
 	end
 
 	local onNewAlphaEntered
 	if params.alpha then
-		--- @param newColor ImagePixelA
-		onNewAlphaEntered = function(newColor)
-			colorSelected(newColor, pickers.currentPreview)
-			local hsv = RGBtoHSV(newColor)
-			updateIndicatorPositions(hsv, newColor.a)
+		--- @param newColor ffiImagePixel
+		--- @param alpha number
+		onNewAlphaEntered = function(newColor, alpha)
+			colorSelected(newColor, alpha, pickers.currentPreview)
+			updateIndicatorPositions(newColor, alpha)
 		end
 	end
 
-	local dataBlock
 	if params.showDataRow then
-		dataBlock = createDataBlock(params, bodyBlock, onNewColorEntered, onNewAlphaEntered)
+		createDataBlock(params, bodyBlock, onNewColorEntered, onNewAlphaEntered)
 	end
-	getValueInputs()
 
 	tes3ui.enterMenuMode(UIID.menu)
 	context.menu:getTopLevelMenu():updateLayout()
@@ -1293,12 +1338,13 @@ end
 
 openMenu({
 	alpha = true,
-	initialColor = { r = 0.5, g = 0.1, b = 0.3, a = 0.4 },
+	initialColor = { r = 0.5, g = 0.1, b = 0.3 },
+	initialAlpha = 0.5,
 	showOriginal = true,
 	showDataRow = true,
 
 })
 
 -- TODO:
--- Consider using a FFI C struct for the pixel data.
--- Put the current and original previews next to each other.
+-- Try out oklab conversion functions once again.
+
