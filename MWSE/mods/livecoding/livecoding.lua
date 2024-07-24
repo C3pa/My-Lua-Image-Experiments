@@ -228,7 +228,7 @@ end
 --- `{ H = 0, s = 1.0, v = 1.0 }`, at the bottom `{ H = 360, s = 1.0, v = 1.0 }`
 function Image:verticalHueBar()
 	--- @type HSV
-	local hsv = { h = 0, s = 1.0, v = 1.0 }
+	local hsv = { h = 0, s = 0.8, v = 0.7 }
 	for y = 1, self.height do
 		local t = y / self.height
 
