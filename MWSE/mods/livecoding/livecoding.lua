@@ -11,6 +11,7 @@ local logger = require("logging.logger")
 
 local Base = require("livecoding.Base")
 local cursorHelper = require("livecoding.cursorHelper")
+local format = require("livecoding.formatHelpers")
 local headingMenu = require("livecoding.headingMenu")
 local oklab = require("livecoding.oklab")
 
@@ -312,26 +313,20 @@ function Image:verticalGrayGradient()
 end
 
 --- @param size integer? The size of single square in pixels.
---- @param lightGray PremulImagePixelA?
---- @param darkGray PremulImagePixelA?
+--- @param lightGray ImagePixel?
+--- @param darkGray ImagePixel?
 function Image:toCheckerboard(size, lightGray, darkGray)
 	size = size or 16
 	local doubleSize = 2 * size
 	local light = ffiPixel({ 0.7, 0.7, 0.7 })
 	if lightGray then
-		-- TODO: check if we can assign to C struct this way
-		light = lightGray
-		-- light.r = lightGray.r
-		-- light.g = lightGray.g
-		-- light.b = lightGray.b
+		-- LuaJIT will do automatic type conversion for us.
+		light = lightGray --[[@as ffiImagePixel]]
 	end
 	local dark = ffiPixel({ 0.5, 0.5, 0.5 })
 	if darkGray then
-		-- TODO: check if we can assign to C struct this way
-		dark = darkGray
-		-- dark.r = darkGray.r
-		-- dark.g = darkGray.g
-		-- dark.b = darkGray.b
+		-- LuaJIT will do automatic type conversion for us.
+		dark = darkGray --[[@as ffiImagePixel]]
 	end
 
 	for y = 0, self.height - 1 do
@@ -359,13 +354,6 @@ end
 function Image:copy()
 	local size = self.height * self.width + 1
 	local data = ffiPixelArray(size)
-	-- TODO: why this for loop?
-	for y = 0, self.height - 1 do
-		local offset = self:getOffset(y)
-		for x = 1, self.width do
-			data[offset + x] = self.data[offset + x]
-		end
-	end
 	ffi.copy(data, self.data, ffi.sizeof("RGB[?]", size))
 
 	local alphas = table.new(size, 0)
