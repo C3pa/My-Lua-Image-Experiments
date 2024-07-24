@@ -895,9 +895,7 @@ local function createPreviewElement(parent, color, alpha, texture)
 	})
 	standardPreview.width = PICKER_PREVIEW_WIDTH / 2
 	standardPreview.height = PICKER_PREVIEW_HEIGHT
-	standardPreview.borderTop = 8
 	standardPreview.borderLeft = 8
-	standardPreview.borderBottom = 8
 
 	local checkersPreview = parent:createRect({
 		id = tes3ui.registerID("ColorPicker_color_preview_right"),
@@ -907,9 +905,7 @@ local function createPreviewElement(parent, color, alpha, texture)
 	checkersPreview.height = PICKER_PREVIEW_HEIGHT
 	checkersPreview.texture = texture
 	checkersPreview.imageFilter = false
-	checkersPreview.borderTop = 8
 	checkersPreview.borderRight = 8
-	checkersPreview.borderBottom = 8
 
 	updatePreviewImage(color, alpha)
 	checkersPreview.texture.pixelData:setPixelsFloat(previewForeground:toPixelBufferFloat())
@@ -920,25 +916,40 @@ local function createPreviewElement(parent, color, alpha, texture)
 	}
 end
 
+--- @param outerContainer tes3uiElement
+--- @param label string
+local function createPreviewLabel(outerContainer, label)
+	local labelContainer = outerContainer:createBlock({
+		id = tes3ui.registerID("ColorPicker_color_preview_label_container")
+	})
+	labelContainer.flowDirection = tes3.flowDirection.topToBottom
+	labelContainer.autoWidth = true
+	labelContainer.autoHeight = true
+	labelContainer.paddingAllSides = 8
+	labelContainer:createLabel({
+		id = tes3ui.registerID("ColorPicker_color_preview_" .. label ),
+		text = strings[label]
+	})
+end
+
 --- @param parent tes3uiElement
 --- @param color ffiImagePixel
 --- @param alpha number
 --- @param label string
+--- @param labelOnTop boolean
 --- @param onClickCallback? fun(e: tes3uiEventData)
 --- @return ColorPickerPreviewsTable
-local function createPreview(parent, color, alpha, label, onClickCallback)
+local function createPreview(parent, color, alpha, label, labelOnTop, onClickCallback)
 	-- We don't want to create references to color.
 	local color = ffiPixel({ color.r, color.g, color.b })
 	local outerContainer = parent:createBlock({ id = tes3ui.registerID("ColorPicker_color_preview_outer_container") })
 	outerContainer.flowDirection = tes3.flowDirection.topToBottom
 	outerContainer.autoWidth = true
 	outerContainer.autoHeight = true
-	outerContainer.paddingTop = 8
 
-	outerContainer:createLabel({
-		id = tes3ui.registerID("ColorPicker_color_preview_" .. label ),
-		text = strings[label]
-	})
+	if labelOnTop then
+		createPreviewLabel(outerContainer, label)
+	end
 
 	local innerContainer = outerContainer:createBlock({ id = tes3ui.registerID("ColorPicker_color_preview_inner_container") })
 	innerContainer.flowDirection = tes3.flowDirection.leftToRight
@@ -947,6 +958,10 @@ local function createPreview(parent, color, alpha, label, onClickCallback)
 
 	local previewTexture = textures["preview" .. label]
 	local previews = createPreviewElement(innerContainer, color, alpha, previewTexture)
+
+	if not labelOnTop then
+		createPreviewLabel(outerContainer, label)
+	end
 
 	if onClickCallback then
 		innerContainer:register(tes3.uiEvent.mouseDown, function(e)
@@ -1068,7 +1083,7 @@ local function createPickerBlock(params, parent)
 	previewContainer.autoWidth = true
 	previewContainer.autoHeight = true
 
-	local currentPreview = createPreview(previewContainer, initialColor, params.initialAlpha, "Current")
+	local currentPreview = createPreview(previewContainer, initialColor, params.initialAlpha, "Current", true)
 
 	-- Implement picking behavior
 	mainPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
