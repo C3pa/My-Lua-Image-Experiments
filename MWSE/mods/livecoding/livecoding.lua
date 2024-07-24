@@ -88,7 +88,7 @@ function HSVtoRGB(hsv)
 
 	return rgb
 end
--- TODO: consider implementing this conversion in C
+
 -- HSVtoRGB = okhsv.okhsv_to_srgb
 
 --- @class ImagePixel
@@ -104,8 +104,7 @@ end
 --- Pixel storing the color in premultiplied format.
 --- @class PremulImagePixelA : ImagePixelA
 
---- @alias ImageRow PremulImagePixelA[]
---- @alias ImageData ImageRow[]
+--- @alias ImageData PremulImagePixelA[]
 
 --- An image helper class that stores RGBA color in premultiplied alpha format.
 --- @class Image
@@ -134,11 +133,10 @@ function Image:new(data)
 	if not t.data then
 		t.data = {}
 		for y = 1, t.height do
-			local row = {}
+			local offset = (y - 1) * t.width
 			for x = 1, t.width do
-				row[x] = { r = 0, g = 0, b = 0, a = 1 }
+				t.data[offset + x] = { r = 0, g = 0, b = 0, a = 1 }
 			end
-			t.data[y] = row
 		end
 	end
 
@@ -146,27 +144,35 @@ function Image:new(data)
 	return t
 end
 
+--- @param y number
+function Image:getOffset(y)
+	return (y - 1) * self.width
+end
+
 --- Returns a copy of a pixel with given coordinates.
 --- @param x integer Horizontal coordinate
 --- @param y integer Vertical coordinate
 --- @return PremulImagePixelA
 function Image:getPixel(x, y)
-	return table.copy(self.data[y][x])
+	local offset = self:getOffset(y)
+	return table.copy(self.data[offset + x])
 end
 
 --- @param x integer Horizontal coordinate
 --- @param y integer Vertical coordinate
 --- @param color PremulImagePixelA
 function Image:setPixel(x, y, color)
-	self.data[y][x] = color
+	local offset = self:getOffset(y)
+	self.data[offset + x] = color
 end
 
 --- Modifies the Image in place.
 --- @param data ImageData
 function Image:fill(data)
 	for y = 1, self.height do
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			table.copy(data[y][x], self.data[y][x])
+			table.copy(data[offset + x], self.data[offset + x])
 		end
 	end
 end
@@ -187,9 +193,9 @@ function Image:fillColor(color)
 	--- @cast color PremulImagePixelA
 
 	for y = 1, self.height do
-		local row = self.data[y]
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			table.copy(color, row[x])
+			table.copy(color, self.data[offset + x])
 		end
 	end
 end
@@ -200,9 +206,9 @@ end
 function Image:fillRow(rowIndex, color)
 	color.a = color.a or 1
 
-	local row = self.data[rowIndex]
+	local offset = self:getOffset(rowIndex)
 	for x = 1, self.width do
-		table.copy(color, row[x])
+		table.copy(color, self.data[offset + x])
 	end
 end
 
@@ -213,18 +219,10 @@ function Image:fillColumn(columnIndex, color)
 	color.a = color.a or 1
 
 	for y = 1, self.height do
-		table.copy(color, self.data[y][columnIndex])
+		local offset = self:getOffset(y)
+		table.copy(color, self.data[offset + columnIndex])
 	end
 end
-
-local hueSection = {
-	first = 1 / 6,
-	second = 2 / 6,
-	third = 3 / 6,
-	fourth = 4 / 6,
-	fifth = 5 / 6,
-	sixth = 6 / 6,
-}
 
 --- Modifies the Image in place. Fills the image into a vertical hue bar. HSV value at the top is:
 --- `{ H = 0, s = 1.0, v = 1.0 }`, at the bottom `{ H = 360, s = 1.0, v = 1.0 }`
@@ -247,14 +245,14 @@ function Image:mainPicker(hue)
 	--- @type HSV
 	local hsv = { h = hue, s = 0.0, v = 0.0 }
 	for y = 1, self.height do
-		local row = self.data[y]
+		local offset = self:getOffset(y)
 		hsv.v = 1 - y / self.height
 
 		for x = 1, self.width do
 			hsv.s = x / self.width
 			local rgb = HSVtoRGB(hsv) --[[@as PremulImagePixelA]]
 			rgb.a = 1.0
-			table.copy(rgb, row[x])
+			table.copy(rgb, self.data[offset + x])
 		end
 	end
 end
@@ -293,7 +291,7 @@ function Image:verticalGradient(topColor, bottomColor)
 	--- @cast topColor PremulImagePixelA
 	--- @cast bottomColor PremulImagePixelA
 
-	for y = 1, self.height do
+	for y = 0, self.height do
 		local t = y / self.height
 		local color = {
 			r = math.lerp(topColor.r, bottomColor.r, t),
@@ -332,20 +330,20 @@ function Image:toCheckerboard(size, lightGray, darkGray)
 	local doubleSize = 2 * size
 
 	for y = 1, self.height do
-		local row = self.data[y]
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
 			-- -1 is compensation for indexing starting at 1.
 			if (((y - 1) % doubleSize) < size) then
 				if (((x - 1) % doubleSize) < size) then
-					table.copy(lightGray, row[x])
+					table.copy(lightGray, self.data[offset + x])
 				else
-					table.copy(darkGray, row[x])
+					table.copy(darkGray, self.data[offset + x])
 				end
 			else
 				if (((x - 1) % doubleSize) < size) then
-					table.copy(darkGray, row[x])
+					table.copy(darkGray, self.data[offset + x])
 				else
-					table.copy(lightGray, row[x])
+					table.copy(lightGray, self.data[offset + x])
 				end
 			end
 
@@ -354,12 +352,12 @@ function Image:toCheckerboard(size, lightGray, darkGray)
 end
 
 function Image:copy()
-	-- Don't use table.deepCopy here, it causes lag when dragging the hue picker.
-	-- Manually copying row by row helps.
-	local data = table.new(self.height, 0)
+	local data = table.new(self.height * self.width, 0)
 	for y = 1, self.height do
-		data[y] = table.new(self.width, 0)
-		table.copy(self.data[y], data[y])
+		local offset = self:getOffset(y)
+		for x = 1, self.width do
+			data[offset + x] = table.copy(self.data[offset + x])
+		end
 	end
 
 	local new = Image:new({
@@ -451,10 +449,9 @@ function Image:blend(image, coeff, type, copy)
 	end
 	local blend = blend[type]
 	for y = 1, self.height do
-		local rowA = data[y]
-		local rowB = image.data[y]
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			rowA[x] = blend(rowA[x], rowB[x], coeff)
+			data[offset + x] = blend(data[offset + x], image.data[offset + x], coeff)
 		end
 	end
 	if copy then
@@ -468,18 +465,18 @@ local niPixelData_BYTES_PER_PIXEL = 4
 function Image:toPixelBufferFloat()
 	local size = self.width * self.height
 	local buffer = table.new(size * niPixelData_BYTES_PER_PIXEL, 0)
-	local offset = 0
+	local stride = 0
 
 	for y = 1, self.height do
-		local row = self.data[y]
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			local pixel = row[x]
-			buffer[offset + 1] = pixel.r
-			buffer[offset + 2] = pixel.g
-			buffer[offset + 3] = pixel.b
-			-- buffer[offset + 4] = 1
-			buffer[offset + 4] = pixel.a
-			offset = offset + 4
+			local pixel = self.data[offset + x]
+			buffer[stride + 1] = pixel.r
+			buffer[stride + 2] = pixel.g
+			buffer[stride + 3] = pixel.b
+			-- buffer[stride + 4] = 1
+			buffer[stride + 4] = pixel.a
+			stride = stride + 4
 		end
 	end
 
@@ -490,19 +487,18 @@ end
 function Image:toPixelBufferByte()
 	local size = self.width * self.height
 	local buffer = table.new(size * niPixelData_BYTES_PER_PIXEL, 0)
-	local offset = 0
+	local stride = 0
 
 	for y = 1, self.height do
-		local row = self.data[y]
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			local pixel = row[x]
-
-			buffer[offset + 1] = pixel.r * 255
-			buffer[offset + 2] = pixel.g * 255
-			buffer[offset + 3] = pixel.b * 255
-			-- buffer[offset + 4] = 255
-			buffer[offset + 4] = pixel.a * 255
-			offset = offset + 4
+			local pixel = self.data[offset + x]
+			buffer[stride + 1] = pixel.r * 255
+			buffer[stride + 2] = pixel.g * 255
+			buffer[stride + 3] = pixel.b * 255
+			-- buffer[stride + 4] = 255
+			buffer[stride + 4] = pixel.a * 255
+			stride = stride + 4
 		end
 	end
 
@@ -562,9 +558,9 @@ function Image:saveBMP(filename)
 	end
 
 	for y = self.height, 1, -1 do
-		local row = self.data[y]
+		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			local pixel = row[x]
+			local pixel = self.data[offset + x]
 			local alpha = pixel.a
 			local b = math.round(255 * pixel.b)
 			local g = math.round(255 * pixel.g)
@@ -630,7 +626,7 @@ local alphaBar = Image:new({
 	width = PICKER_VERTICAL_COLUMN_WIDTH,
 	height = PICKER_HEIGHT,
 })
-alphaBar:verticalGradient({ r = 0.35, g = 0.35, b = 0.35, a = 1.0 }, { r = 1, g = 1, b = 1, a = 0.0 })
+alphaBar:verticalGradient({ r = 0.25, g = 0.25, b = 0.25, a = 1.0 }, { r = 1, g = 1, b = 1, a = 0.0 })
 alphaBar = alphaChecker:blend(alphaBar, 0.5, "over", true) --[[@as Image]]
 
 local previewCheckers = Image:new({
@@ -644,8 +640,8 @@ local previewForeground = Image:new({
 })
 
 if EXPORT_IMAGES_BMP then
-	blackGradient:saveBMP("blackGradient.bmp")
-	mainImage:saveBMP("mainImage+blackGradient.bmp")
+	blackGradient:saveBMP("imgBlackGradient.bmp")
+	mainImage:saveBMP("imgMainImage+blackGradient.bmp")
 	hueBar:saveBMP("imgHueBar.bmp")
 	alphaBar:saveBMP("imgAlphaBar.bmp")
 end
@@ -1295,9 +1291,6 @@ local function openMenu(params)
 	return context.menu
 end
 
--- TODO: main points left:
--- Consider implementing a proportional color space such as okhsv
-
 openMenu({
 	alpha = true,
 	initialColor = { r = 0.5, g = 0.1, b = 0.3, a = 0.4 },
@@ -1305,3 +1298,7 @@ openMenu({
 	showDataRow = true,
 
 })
+
+-- TODO:
+-- Consider using a FFI C struct for the pixel data.
+-- Put the current and original previews next to each other.
