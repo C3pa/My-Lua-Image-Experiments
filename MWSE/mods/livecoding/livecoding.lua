@@ -17,22 +17,6 @@ local Image = require("livecoding.Image")
 local oklab = require("livecoding.oklab")
 local premultiply = require("livecoding.premultiply")
 
--- Will export the test images as BMP files for inspecting. This will force all the image
--- dimensions to 200x100.
-local EXPORT_IMAGES_BMP = false
-
-if EXPORT_IMAGES_BMP then
-	-- TODO
-	-- Hack for `saveBMP`
-	local parentConstructor = Image.new
-	--- @diagnostic disable-next-line: duplicate-set-field
-	Image.new = function(self, data)
-		data.width = 200
-		data.height = 100
-		parentConstructor(self, data)
-	end
-end
-
 -- Defined in oklab\init.lua
 local ffiPixel = ffi.typeof("RGB") --[[@as fun(init: ffiImagePixelInit?): ffiImagePixel]]
 
@@ -181,29 +165,6 @@ end
 -- mwse.log(m)
 -- tes3.messageBox(m)
 
-
-
-local picker = ColorPicker:new({
-	mainWidth = PICKER_MAIN_WIDTH,
-	height = PICKER_HEIGHT,
-	hueWidth = PICKER_VERTICAL_COLUMN_WIDTH,
-	previewWidth = PICKER_PREVIEW_WIDTH,
-	previewHeight = PICKER_PREVIEW_HEIGHT,
-	initialColor = { r = 0.5, g = 0.1, b = 0.3 },
-	initialAlpha = 0.5,
-})
-
-
-if EXPORT_IMAGES_BMP then
-	picker.mainImage:saveBMP("imgMainImage+blackGradient.bmp")
-	picker.hueBar:saveBMP("imgHueBar.bmp")
-	picker.alphaBar:saveBMP("imgAlphaBar.bmp")
-	tes3.messageBox("Images sucessfuly exported! Since these have wrong dimensions, color picker won't be opened. \z
-		Disable `EXPORT_IMAGES_BMP` to open the color picker!"
-	)
-	return
-end
-
 local UIID = {
 	menu = tes3ui.registerID("testing:Menu"),
 	pickerMenu = tes3ui.registerID("testing:pickerMenu"),
@@ -254,10 +215,11 @@ local strings = {
 --- @field checkersPreview tes3uiElement
 
 
+--- @param picker ColorPicker
 --- @param previews ColorPickerPreviewsTable
 --- @param newColor ffiImagePixel
 --- @param alpha number
-local function updatePreview(previews, newColor, alpha)
+local function updatePreview(picker, previews, newColor, alpha)
 	previews.standardPreview.color = { newColor.r, newColor.g, newColor.b }
 	previews.standardPreview:updateLayout()
 	picker:updatePreviewImage(newColor, alpha)
@@ -337,34 +299,41 @@ end
 
 --- Used to update current preview color and the text shown in the value input.
 --- Usually used when after a color was picked in the main or alpha pickers.
+--- @param picker ColorPicker
 --- @param newColor ffiImagePixel
 --- @param alpha number
 --- @param previews ColorPickerPreviewsTable
-local function colorSelected(newColor, alpha, previews)
+local function colorSelected(picker, newColor, alpha, previews)
+	-- Make sure we don't create reference to the pixel picked from the mainImage.
+	-- We construct a new ffiPixel.
 	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
-	updatePreview(previews, newColor, alpha)
+	updatePreview(picker, previews, newColor, alpha)
 	updateValueInput(newColor, alpha)
 end
 
 --- Used when a color with different Hue was picked.
---- @param newColor ffiImagePixel
+--- @param picker ColorPicker
+--- @param newColor ffiImagePixel|ImagePixel
 --- @param alpha number
 --- @param previews ColorPickerPreviewsTable
 --- @param mainPicker tes3uiElement
-local function hueChanged(newColor, alpha, previews, mainPicker)
+local function hueChanged(picker, newColor, alpha, previews, mainPicker)
+	-- Make sure we don't create reference to the pixel picked from the mainImage.
+	-- We construct a new ffiPixel.
 	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
-	colorSelected(newColor, alpha, previews)
+	colorSelected(picker, newColor, alpha, previews)
 	-- Now, also need to regenerate the image for the main picker since the Hue changed.
 	picker:updateMainImage(newColor)
 	mainPicker.texture.pixelData:setPixelsFloat(picker.mainImage:toPixelBufferFloat())
 end
 
+--- @param picker ColorPicker
 --- @param parent tes3uiElement
 --- @param color ffiImagePixel
 --- @param alpha number
 --- @param texture niSourceTexture
 --- @return ColorPickerPreviewsTable
-local function createPreviewElement(parent, color, alpha, texture)
+local function createPreviewElement(picker, parent, color, alpha, texture)
 	local standardPreview = parent:createRect({
 		id = tes3ui.registerID("ColorPicker_color_preview_left"),
 		color = { color.r, color.g, color.b },
@@ -408,6 +377,7 @@ local function createPreviewLabel(outerContainer, label)
 	})
 end
 
+--- @param picker ColorPicker
 --- @param parent tes3uiElement
 --- @param color ffiImagePixel
 --- @param alpha number
@@ -415,7 +385,7 @@ end
 --- @param labelOnTop boolean
 --- @param onClickCallback? fun(e: tes3uiEventData)
 --- @return ColorPickerPreviewsTable
-local function createPreview(parent, color, alpha, label, labelOnTop, onClickCallback)
+local function createPreview(picker, parent, color, alpha, label, labelOnTop, onClickCallback)
 	-- We don't want to create references to color.
 	local color = ffiPixel({ color.r, color.g, color.b })
 	local outerContainer = parent:createBlock({ id = tes3ui.registerID("ColorPicker_color_preview_outer_container") })
@@ -435,7 +405,7 @@ local function createPreview(parent, color, alpha, label, labelOnTop, onClickCal
 	innerContainer.autoHeight = true
 
 	local previewTexture = picker.textures["preview" .. label]
-	local previews = createPreviewElement(innerContainer, color, alpha, previewTexture)
+	local previews = createPreviewElement(picker, innerContainer, color, alpha, previewTexture)
 
 	if not labelOnTop then
 		createPreviewLabel(outerContainer, label)
@@ -467,8 +437,9 @@ local function createIndicator(parent, id, absolutePosAlignX, absolutePosAlignY)
 end
 
 --- @param params ColorPicker.new.params
+--- @param picker ColorPicker
 --- @param parent tes3uiElement
-local function createPickerBlock(params, parent)
+local function createPickerBlock(params, picker, parent)
 	local initialColor = ffiPixel({ params.initialColor.r, params.initialColor.g, params.initialColor.b })
 
 	local mainRow = parent:createBlock({ id = tes3ui.registerID("ColorPicker_picker_row_container") })
@@ -582,7 +553,7 @@ local function createPickerBlock(params, parent)
 	previewContainer.autoWidth = true
 	previewContainer.autoHeight = true
 
-	local currentPreview = createPreview(previewContainer, initialColor, params.initialAlpha, "Current", true)
+	local currentPreview = createPreview(picker, previewContainer, initialColor, params.initialAlpha, "Current", true)
 
 	-- Implement picking behavior
 	mainPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
@@ -594,7 +565,7 @@ local function createPickerBlock(params, parent)
 			ffiPixel({ pickedColor.r, pickedColor.g, pickedColor.b }),
 			picker.currentAlpha
 		)
-		colorSelected(picker.currentColor, picker.currentAlpha, currentPreview)
+		colorSelected(picker, picker.currentColor, picker.currentAlpha, currentPreview)
 
 		x = x / mainPicker.width
 		y = y / mainPicker.height
@@ -612,7 +583,7 @@ local function createPickerBlock(params, parent)
 			ffiPixel({ pickedColor.r, pickedColor.g, pickedColor.b }),
 			picker.currentAlpha
 		)
-		colorSelected(picker.currentColor, picker.currentAlpha, currentPreview)
+		colorSelected(picker, picker.currentColor, picker.currentAlpha, currentPreview)
 
 		mainIndicator.absolutePosAlignX = x / mainPicker.width
 		mainIndicator.absolutePosAlignY = y / mainPicker.height
@@ -628,7 +599,7 @@ local function createPickerBlock(params, parent)
 			ffiPixel({ pickedColor.r, pickedColor.g, pickedColor.b }),
 			picker.currentAlpha
 		)
-		hueChanged(picker.currentColor, picker.currentAlpha, currentPreview, mainPicker)
+		hueChanged(picker, picker.currentColor, picker.currentAlpha, currentPreview, mainPicker)
 
 		hueIndicator.absolutePosAlignY = y / huePicker.height
 		mainRow:getTopLevelMenu():updateLayout()
@@ -639,7 +610,7 @@ local function createPickerBlock(params, parent)
 			local y = math.clamp(e.relativeY / alphaPicker.height, 0, 1)
 			picker:setColor(picker.currentColor, 1 - y)
 
-			colorSelected(picker.currentColor, picker.currentAlpha, currentPreview)
+			colorSelected(picker, picker.currentColor, picker.currentAlpha, currentPreview)
 			alphaIndicator.absolutePosAlignY = y
 			mainRow:getTopLevelMenu():updateLayout()
 		end)
@@ -653,7 +624,7 @@ local function createPickerBlock(params, parent)
 				ffiPixel({ params.initialColor.r, params.initialColor.g, params.initialColor.b }),
 				params.initialAlpha
 			)
-			hueChanged(picker.currentColor, picker.currentAlpha, currentPreview, mainPicker)
+			hueChanged(picker, picker.currentColor, picker.currentAlpha, currentPreview, mainPicker)
 
 			mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
 			mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
@@ -664,7 +635,7 @@ local function createPickerBlock(params, parent)
 			end
 			mainRow:getTopLevelMenu():updateLayout()
 		end
-		createPreview(previewContainer, initialColor, params.initialAlpha, "Original", false, resetColor)
+		createPreview(picker, previewContainer, initialColor, params.initialAlpha, "Original", false, resetColor)
 	end
 
 	return {
@@ -702,9 +673,10 @@ local function getInputValue(input)
 end
 
 --- @param params ColorPicker.new.params
+--- @param picker ColorPicker
 --- @param parent tes3uiElement
 --- @param onNewColorEntered fun(newColor: ffiImagePixel, alpha: number)
-local function createDataBlock(params, parent, onNewColorEntered)
+local function createDataBlock(params, picker, parent, onNewColorEntered)
 	-- local dataRow = parent:createBlock({
 	local dataRow = parent:createThinBorder({
 		id = tes3ui.registerID("ColorPicker_data_row_container")
@@ -783,6 +755,15 @@ local function openMenu(params)
 	if (not params.alpha) or (not params.initialAlpha) then
 		params.initialAlpha = 1
 	end
+	local picker = ColorPicker:new({
+		mainWidth = PICKER_MAIN_WIDTH,
+		height = PICKER_HEIGHT,
+		hueWidth = PICKER_VERTICAL_COLUMN_WIDTH,
+		previewWidth = PICKER_PREVIEW_WIDTH,
+		previewHeight = PICKER_PREVIEW_HEIGHT,
+		initialColor = { r = 0.5, g = 0.1, b = 0.3 },
+		initialAlpha = 0.5,
+	})
 
 	picker:setColor(
 		ffiPixel({ params.initialColor.r, params.initialColor.g, params.initialColor.b }),
@@ -807,17 +788,17 @@ local function openMenu(params)
 	bodyBlock.paddingBottom = 8
 	bodyBlock.flowDirection = tes3.flowDirection.topToBottom
 
-	local pickers = createPickerBlock(params, bodyBlock)
+	local pickers = createPickerBlock(params, picker, bodyBlock)
 
 	--- @param newColor ffiImagePixel
 	--- @param alpha number
 	local function onNewColorEntered(newColor, alpha)
-		hueChanged(newColor, alpha, pickers.currentPreview, pickers.mainPicker)
+		hueChanged(picker, newColor, alpha, pickers.currentPreview, pickers.mainPicker)
 		updateIndicatorPositions(newColor, alpha)
 	end
 
 	if params.showDataRow then
-		createDataBlock(params, bodyBlock, onNewColorEntered)
+		createDataBlock(params, picker, bodyBlock, onNewColorEntered)
 	end
 
 	if params.closeCallback then
@@ -834,7 +815,6 @@ local function openMenu(params)
 
 	tes3ui.enterMenuMode(UIID.menu)
 	context.menu:getTopLevelMenu():updateLayout()
-	return context.menu
 end
 
 openMenu({
