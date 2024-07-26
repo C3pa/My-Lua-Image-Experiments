@@ -4,6 +4,8 @@ local Base = require("livecoding.Base")
 local oklab = require("livecoding.oklab")
 local premultiply = require("livecoding.premultiply")
 
+local niPixelData_BYTES_PER_PIXEL = 4
+
 --- @class HSV
 --- @field h number Hue in range [0, 360)
 --- @field s number Saturation in range [0, 1]
@@ -99,17 +101,10 @@ function Image:setPixel(x, y, color)
 end
 
 --- Modifies the Image in place.
---- @param data ffiImagePixel[]
-function Image:fill(data)
-	self.data = data
-end
-
---- Modifies the Image in place. Will premultiply the color channels with alpha value.
 --- @param color ffiImagePixel
 --- @param alpha number?
 function Image:fillColor(color, alpha)
 	alpha = alpha or 1
-	premultiply.pixel(color, alpha)
 
 	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
@@ -182,16 +177,12 @@ function Image:mainPicker(hue)
 	end
 end
 
---- Modifies the Image in place. Will premultiply the color channels with alpha value.
---- @param leftColor ImagePixelArgument
---- @param rightColor ImagePixelArgument
+--- Modifies the Image in place.
+--- @param leftColor PremulImagePixelA
+--- @param rightColor PremulImagePixelA
 function Image:horizontalGradient(leftColor, rightColor)
 	leftColor.a = leftColor.a or 1
 	rightColor.a = rightColor.a or 1
-	premultiply.pixelLua(leftColor)
-	premultiply.pixelLua(rightColor)
-	--- @cast leftColor PremulImagePixelA
-	--- @cast rightColor PremulImagePixelA
 
 	for x = 1, self.width do
 		local t = x / self.width
@@ -207,16 +198,12 @@ function Image:horizontalGradient(leftColor, rightColor)
 	end
 end
 
---- Modifies the Image in place. Will premultiply the color channels with alpha value.
---- @param topColor ImagePixelArgument
---- @param bottomColor ImagePixelArgument
+--- Modifies the Image in place.
+--- @param topColor PremulImagePixelA
+--- @param bottomColor PremulImagePixelA
 function Image:verticalGradient(topColor, bottomColor)
 	topColor.a = topColor.a or 1
 	bottomColor.a = bottomColor.a or 1
-	premultiply.pixelLua(topColor)
-	premultiply.pixelLua(bottomColor)
-	--- @cast topColor PremulImagePixelA
-	--- @cast bottomColor PremulImagePixelA
 
 	-- Lower level fillRow will account for the 0-based indexing of the underlying data array.
 	for y = 1, self.height do
@@ -309,73 +296,17 @@ function Image:copy()
 end
 
 -- https://en.wikipedia.org/wiki/Alpha_compositing#Description
-local function colorBlend(cA, cB, alphaA, alphaB, alphaO)
-	return (cA * alphaA + cB * alphaB * (1 - alphaA)) / alphaO
+local function colorBlend(cA, cB, alphaA, alphaB, inverse)
+	local alphaO = alphaA + alphaB * inverse
+	return (cA * alphaA + cB * alphaB * inverse) / alphaO
 end
 
---- @alias ImageBlendType
----| "plus"
----| "dissolve"
----| "over"
-
---- @alias ImageBlendFunction fun(pixel1: PremulImagePixelA, pixel2: PremulImagePixelA, coeff: number): PremulImagePixelA
-
---- @type table<ImageBlendType, ImageBlendFunction>
-local blend = {}
-
---- @deprecated This worked before when the color channels were in [0, 255] range.
---- No idea why this doesn't work correctly anymore
--- See 4.5 The PLUS operator in:
--- https://graphics.pixar.com/library/Compositing/paper.pdf
-function blend.plus(pixel1, pixel2, coeff)
-	return {
-		r = pixel1.r + pixel2.r,
-		g = pixel1.g + pixel2.g,
-		b = pixel1.b + pixel2.b,
-		a = pixel1.a * pixel2.a,
-	}
-end
-
---- @deprecated
--- See 4.5 The PLUS operator in:
--- https://graphics.pixar.com/library/Compositing/paper.pdf
-function blend.dissolve(pixel1, pixel2, coeff)
-	local inverse = 1 - coeff
-	pixel1 = {
-		r = pixel1.r * coeff,
-		g = pixel1.g * coeff,
-		b = pixel1.b * coeff,
-		a = pixel1.a * coeff,
-	}
-	pixel2 = {
-		r = pixel1.r * inverse,
-		g = pixel1.g * inverse,
-		b = pixel1.b * inverse,
-		a = pixel1.a * inverse,
-	}
-	return blend.plus(pixel1, pixel2, coeff)
-end
-
---- https://en.wikipedia.org/wiki/Alpha_compositing#Straight_versus_premultiplied
-function blend.over(pixel1, pixel2, coeff)
-	local inverseA2 = 1 - pixel2.a
-	-- TODO: see if modifying the pixel1 instead of creating a new table is faster
-	return {
-		r = pixel2.r + pixel1.r * inverseA2,
-		g = pixel2.g + pixel1.g * inverseA2,
-		b = pixel2.b + pixel1.b * inverseA2,
-		a = pixel2.a + pixel1.a * inverseA2,
-	}
-end
-
---- Returns a copy with the result of blending between the two images
---- @param image Image
---- @param coeff number In range of [0, 1].
---- @param type ImageBlendType
+--- Returns a copy with the result of blending between `self` and given `image`.
+--- @param background Image
 --- @param copy boolean? If true, won't modify `self`, but will return the result of blend operation in a Image copy.
-function Image:blend(image, coeff, type, copy)
-	local sameWidth = self.width == image.width
-	local sameHeight = self.height == image.height
+function Image:blend(background, copy)
+	local sameWidth = self.width == background.width
+	local sameHeight = self.height == background.height
 	assert(sameWidth, "Images must be of same width.")
 	assert(sameHeight, "Images must be of same height.")
 
@@ -388,22 +319,22 @@ function Image:blend(image, coeff, type, copy)
 		data = new.data
 		alphas = new.alphas
 	end
-	local blend = blend[type]
+
 	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
 		for x = 1, self.width do
-			-- We only do "over" blending in this version
-			local alpha2 = image.alphas[offset + x]
-			local inverseA2 = 1 - alpha2
-			local pixel1 = data[offset + x]
-			local pixel2 = image.data[offset + x]
-			pixel1.r = pixel2.r + pixel1.r * inverseA2
-			pixel1.g = pixel2.g + pixel1.g * inverseA2
-			pixel1.b = pixel2.b + pixel1.b * inverseA2
-			data[offset + x] = pixel1
-			alphas[offset + x] = alpha2 + alphas[offset + x] * inverseA2
-			-- TODO:
-			-- data[offset + x] = blend(data[offset + x], image.data[offset + x], coeff)
+			local i = offset + x
+			local pixel1 = data[i]
+			local pixel2 = background.data[i]
+			local alpha1 = alphas[i]
+			local alpha2 = background.alphas[i]
+
+			local inverse = 1 - alpha1
+			pixel1.r = colorBlend(pixel1.r, pixel2.r, alpha1, alpha2, inverse)
+			pixel1.g = colorBlend(pixel1.g, pixel2.g, alpha1, alpha2, inverse)
+			pixel1.b = colorBlend(pixel1.b, pixel2.b, alpha1, alpha2, inverse)
+			alpha1 = alpha1 + alpha2 * inverse
+			data[i], alphas[i] = pixel1, alpha1
 		end
 	end
 	if copy then
@@ -411,30 +342,6 @@ function Image:blend(image, coeff, type, copy)
 	end
 end
 
-
-local test = Image:new({
-	height = 3,
-	width = 5,
-	-- data = {
-	-- 	{ r = 0, g = 0, b = 0, a = 1 }, { r = 0, g = 0, b = 0, a = 1 }, { r = 0, g = 0, b = 0, a = 1 }, { r = 0, g = 0, b = 0, a = 1 }, { r = 0, g = 0, b = 0, a = 1 },
-	-- 	{ r = 0, g = 1, b = 0, a = 1 }, { r = 0, g = 1, b = 0, a = 1 }, { r = 0, g = 1, b = 0, a = 1 }, { r = 0, g = 1, b = 0, a = 1 }, { r = 0, g = 1, b = 0, a = 1 },
-	-- 	{ r = 0, g = 0.3, b = 1, a = 1 }, { r = 0, g = 1, b = 1, a = 1 }, { r = 0, g = 1, b = 1, a = 1 }, { r = 0, g = 1, b = 1, a = 1 }, { r = 0, g = 1, b = 1, a = 1 },
-	-- }
-})
--- test:fillColor(ffiPixel({ 0.3, 0.3, 0.3 }), 0.5)
--- test:fillColumn(2, ffiPixel({ 1.0, 1.0, 1.0 }))
--- test:verticalHueBar()
--- test:mainPicker(60)
--- test:horizontalGradient({ r = 1, b = 1, g = 0, a = 0.5},{r = 0, b = 0.5, g = 1, a = 0.0})
--- test:verticalGradient({ r = 1, b = 1, g = 0, a = 0.5},{r = 0, b = 0.5, g = 1, a = 0.0})
--- test:horizontalColorGradient({ r = 1, b = 1, g = 0 })
--- test:verticalGrayGradient()
--- test:toCheckerboard(2, { r = 1.0, g = 0.0, b = 0.0 }, { r = 0.0, g = 0.0, b = 1.0 })
--- mwse.log("test.copy = %s", format.imageData(test))
--- mwse.log("test.alphas = %s", inspect(test.alphas))
--- test:saveBMP("imgTest.bmp")
-
-local niPixelData_BYTES_PER_PIXEL = 4
 
 --- For feeding data straight to `niPixelData:setPixelsFloat`.
 function Image:toPixelBufferFloat()
@@ -449,7 +356,6 @@ function Image:toPixelBufferFloat()
 			buffer[stride + 1] = pixel.r
 			buffer[stride + 2] = pixel.g
 			buffer[stride + 3] = pixel.b
-			-- buffer[stride + 4] = 1
 			buffer[stride + 4] = self.alphas[offset + x]
 			stride = stride + 4
 		end
@@ -471,7 +377,6 @@ function Image:toPixelBufferByte()
 			buffer[stride + 1] = pixel.r * 255
 			buffer[stride + 2] = pixel.g * 255
 			buffer[stride + 3] = pixel.b * 255
-			-- buffer[stride + 4] = 255
 			buffer[stride + 4] = self.alphas[offset + x] * 255
 			stride = stride + 4
 		end

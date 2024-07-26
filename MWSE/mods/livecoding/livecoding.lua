@@ -103,7 +103,7 @@ function ColorPicker:new(data)
 		{ r = 0.25, g = 0.25, b = 0.25, a = 1.0 },
 		{ r = 1.0,  g = 1.0,  b = 1.0,  a = 0.0 }
 	)
-	t.alphaBar = t.alphaCheckerboard:blend(t.alphaBar, 0.5, "over", true) --[[@as Image]]
+	t.alphaBar = t.alphaBar:blend(t.alphaCheckerboard, true) --[[@as Image]]
 
 	t.previewCheckerboard = Image:new({
 		-- Only half of the preview is transparent.
@@ -151,7 +151,7 @@ end
 --- @param alpha number
 function ColorPicker:updatePreviewImage(color, alpha)
 	self.previewImage:fillColor(color, alpha)
-	self.previewImage = self.previewCheckerboard:blend(self.previewImage, 0.5, "over", true)
+	self.previewImage = self.previewImage:blend(self.previewCheckerboard, true)
 end
 
 
@@ -274,10 +274,7 @@ local function updateValueInput(newColor, alpha)
 	if not input then return end
 
 	-- Make sure we don't get NaNs in color text inputs. We clamp alpha here.
-	alpha = 1.0 or math.clamp(alpha, 0.0000001, 1.0)
-
-	-- We store color premultiplied by alpha. Let's undo it to not expose this to the user via the UI.
-	premultiply.undo(newColor, alpha)
+	alpha = math.clamp(alpha, 0.0000001, 1.0) or 1.0
 
 	local newText = ""
 	if input:getLuaData("hasAlpha") then
@@ -677,7 +674,6 @@ end
 --- @param parent tes3uiElement
 --- @param onNewColorEntered fun(newColor: ffiImagePixel, alpha: number)
 local function createDataBlock(params, picker, parent, onNewColorEntered)
-	-- local dataRow = parent:createBlock({
 	local dataRow = parent:createThinBorder({
 		id = tes3ui.registerID("ColorPicker_data_row_container")
 	})
@@ -689,15 +685,12 @@ local function createDataBlock(params, picker, parent, onNewColorEntered)
 	dataRow.paddingAllSides = 4
 	dataRow.childAlignY = 0.5
 
-	local initialColor = table.copy(params.initialColor) --[[@as ImagePixelA]]
-	initialColor.a = params.initialAlpha
-	-- We store color premultiplied by alpha. Don't expose this to the user, undo it in the UI.
-	premultiply.undoLua(initialColor)
-
 	local text = strings["RGB: #"]
 	local inputText = format.pixelToHex(params.initialColor)
 	if params.alpha then
 		text = strings["ARGB: #"]
+		local initialColor = table.copy(params.initialColor) --[[@as ImagePixelA]]
+		initialColor.a = params.initialAlpha
 		inputText = format.pixelToHex(initialColor)
 	end
 	local label = dataRow:createLabel({
@@ -722,7 +715,9 @@ local function createDataBlock(params, picker, parent, onNewColorEntered)
 		color.r = color.r or picker.currentColor.r
 		color.g = color.g or picker.currentColor.g
 		color.b = color.b or picker.currentColor.b
-		color.a = color.a or 1.0
+		if not params.alpha then
+			color.a = 1.0
+		end
 		local pixel = ffiPixel({ color.r, color.g, color.b })
 		picker:setColor(pixel, color.a)
 		-- Update other parts of the Color Picker
@@ -755,14 +750,17 @@ local function openMenu(params)
 	if (not params.alpha) or (not params.initialAlpha) then
 		params.initialAlpha = 1
 	end
+	-- The color picker stores color premultiplied by alpha
+	premultiply.pixel(params.initialColor, params.initialAlpha)
+
 	local picker = ColorPicker:new({
 		mainWidth = PICKER_MAIN_WIDTH,
 		height = PICKER_HEIGHT,
 		hueWidth = PICKER_VERTICAL_COLUMN_WIDTH,
 		previewWidth = PICKER_PREVIEW_WIDTH,
 		previewHeight = PICKER_PREVIEW_HEIGHT,
-		initialColor = { r = 0.5, g = 0.1, b = 0.3 },
-		initialAlpha = 0.5,
+		initialColor = params.initialColor,
+		initialAlpha = params.initialAlpha,
 	})
 
 	picker:setColor(
