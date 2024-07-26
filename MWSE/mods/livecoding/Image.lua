@@ -2,6 +2,7 @@ local ffi = require("ffi")
 
 local Base = require("livecoding.Base")
 local oklab = require("livecoding.oklab")
+local premultiply = require("livecoding.premultiply")
 
 --- @class HSV
 --- @field h number Hue in range [0, 360)
@@ -54,12 +55,6 @@ function Image:new(data)
 	local t = Base:new(data)
 	setmetatable(t, self)
 
-	-- Hack for `saveBMP`
-	if EXPORT_IMAGES_BMP then
-		data.width = 200
-		data.height = 100
-	end
-
 	local size = t.width * t.height
 	if t.data == nil then
 		t.data = ffiPixelArray(size + 1)
@@ -109,20 +104,12 @@ function Image:fill(data)
 	self.data = data
 end
 
---- @param pixel ffiImagePixel
---- @param alpha number
-local function premultiply(pixel, alpha)
-	pixel.r = pixel.r * alpha
-	pixel.g = pixel.g * alpha
-	pixel.b = pixel.b * alpha
-end
-
 --- Modifies the Image in place. Will premultiply the color channels with alpha value.
 --- @param color ffiImagePixel
 --- @param alpha number?
 function Image:fillColor(color, alpha)
 	alpha = alpha or 1
-	premultiply(color, alpha)
+	premultiply.pixel(color, alpha)
 
 	for y = 0, self.height - 1 do
 		local offset = self:getOffset(y)
@@ -178,6 +165,7 @@ function Image:verticalHueBar()
 	end
 end
 
+--- Generates main picker image for given Hue.
 --- @param hue number Hue in range [0, 360)
 function Image:mainPicker(hue)
 	local hsv = ffiHSV({ hue, 0.0, 0.0 })
@@ -194,21 +182,14 @@ function Image:mainPicker(hue)
 	end
 end
 
---- @param pixel ImagePixelA
-local function premultiplyLuaPixel(pixel)
-	pixel.r = pixel.r * pixel.a
-	pixel.g = pixel.g * pixel.a
-	pixel.b = pixel.b * pixel.a
-end
-
 --- Modifies the Image in place. Will premultiply the color channels with alpha value.
 --- @param leftColor ImagePixelArgument
 --- @param rightColor ImagePixelArgument
 function Image:horizontalGradient(leftColor, rightColor)
 	leftColor.a = leftColor.a or 1
 	rightColor.a = rightColor.a or 1
-	premultiplyLuaPixel(leftColor)
-	premultiplyLuaPixel(rightColor)
+	premultiply.pixelLua(leftColor)
+	premultiply.pixelLua(rightColor)
 	--- @cast leftColor PremulImagePixelA
 	--- @cast rightColor PremulImagePixelA
 
@@ -232,8 +213,8 @@ end
 function Image:verticalGradient(topColor, bottomColor)
 	topColor.a = topColor.a or 1
 	bottomColor.a = bottomColor.a or 1
-	premultiplyLuaPixel(topColor)
-	premultiplyLuaPixel(bottomColor)
+	premultiply.pixelLua(topColor)
+	premultiply.pixelLua(bottomColor)
 	--- @cast topColor PremulImagePixelA
 	--- @cast bottomColor PremulImagePixelA
 
@@ -268,6 +249,7 @@ function Image:verticalGrayGradient()
 	self:verticalGradient(topColor, bottomColor)
 end
 
+--- Creates a checkered pattern.
 --- @param size integer? The size of single square in pixels.
 --- @param lightGray ImagePixel?
 --- @param darkGray ImagePixel?
@@ -506,9 +488,6 @@ end
 
 --- @param filename string
 function Image:saveBMP(filename)
-	if not EXPORT_IMAGES_BMP then
-		error("Can't export images!")
-	end
 	local file = io.open(filename, "wb")
 	if not file then
 		error(string.format("Can't open %q. Traceback:%s", filename, debug.traceback()))
