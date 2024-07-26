@@ -576,12 +576,8 @@ local function createDataBlock(params, picker, parent, onNewColorEntered)
 end
 
 --- @param params openColorPickerMenu.new.params
-local function openMenu(params)
-	local menu = tes3ui.findMenu(UIID.menu)
-	if menu then
-		return menu
-	end
-
+--- @param parent tes3uiElement
+local function createColorPickerWidget(params, parent)
 	if (not params.alpha) or (not params.initialAlpha) then
 		params.initialAlpha = 1
 	end
@@ -602,8 +598,31 @@ local function openMenu(params)
 		ffiPixel({ params.initialColor.r, params.initialColor.g, params.initialColor.b }),
 		params.initialAlpha
 	)
-	local x, y = cursorHelper.getCursorCoorsMenuRelative()
 
+	local pickers = createPickerBlock(params, picker, parent)
+
+	if params.showDataRow then
+		--- @param newColor ffiImagePixel|ImagePixel
+		--- @param alpha number
+		local function onNewColorEntered(newColor, alpha)
+			hueChanged(picker, newColor, alpha, pickers.currentPreview, pickers.mainPicker)
+			-- TODO: looks like ffi can convert our ImagePixel table to ffiImagePixel when calling oklab.hsvlib_srgb_to_hsv
+			updateIndicatorPositions(newColor, alpha)
+		end
+
+		createDataBlock(params, picker, parent, onNewColorEntered)
+	end
+
+	return picker
+end
+
+--- @param params openColorPickerMenu.new.params
+local function openColorPickerMenu(params)
+	local menu = tes3ui.findMenu(UIID.menu)
+	if menu then
+		return menu
+	end
+	local x, y = cursorHelper.getCursorCoorsMenuRelative()
 	local context = headingMenu.create({
 		id = UIID.menu,
 		heading = strings["Color Picker Menu"],
@@ -621,18 +640,8 @@ local function openMenu(params)
 	bodyBlock.paddingBottom = 8
 	bodyBlock.flowDirection = tes3.flowDirection.topToBottom
 
-	local pickers = createPickerBlock(params, picker, bodyBlock)
-
-	--- @param newColor ffiImagePixel|ImagePixel
-	--- @param alpha number
-	local function onNewColorEntered(newColor, alpha)
-		hueChanged(picker, newColor, alpha, pickers.currentPreview, pickers.mainPicker)
-		updateIndicatorPositions(newColor, alpha)
-	end
-
-	if params.showDataRow then
-		createDataBlock(params, picker, bodyBlock, onNewColorEntered)
-	end
+	local picker = createColorPickerWidget(params, bodyBlock)
+	context.menu:getTopLevelMenu():updateLayout()
 
 	if params.closeCallback then
 		context.menu:registerAfter(tes3.uiEvent.destroy, function()
@@ -647,10 +656,9 @@ local function openMenu(params)
 	end
 
 	tes3ui.enterMenuMode(UIID.menu)
-	context.menu:getTopLevelMenu():updateLayout()
 end
 
-openMenu({
+openColorPickerMenu({
 	alpha = true,
 	initialColor = { r = 0.75, g = 0.15, b = 0.45 },
 	initialAlpha = 0.6,
@@ -662,8 +670,8 @@ openMenu({
 })
 
 -- TODO:
--- Expose it as a global function. Something as tes3ui.openColorPickerMenu that opens color picker in a separate menu. I guess that would imply there is only one color picker menu active at a single time.
 -- Expose as a widget: tes3uiElement:createColorPicker so modders can embed it into their menus.
+-- Expose it as a global function. Something as tes3ui.openColorPickerMenu that opens color picker in a separate menu. I guess that would imply there is only one color picker menu active at a single time.
 -- Add a mwseMCMColorPicker setting
 
 --[[
