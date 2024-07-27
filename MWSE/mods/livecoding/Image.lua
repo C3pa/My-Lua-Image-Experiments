@@ -79,15 +79,20 @@ function Image:new(data)
 	return t
 end
 
---- @param y number
+--- @private
+--- @param y integer
 function Image:getOffset(y)
 	return y * self.width
 end
 
 --- Returns a copy of a pixel with given coordinates.
---- @param x integer Horizontal coordinate
---- @param y integer Vertical coordinate
+--- @param x number Horizontal coordinate
+--- @param y number Vertical coordinate
 function Image:getPixel(x, y)
+	-- Slider at the bottom of main picker has higher precision than color picker width.
+	-- So, we could feed in non integer coordinates. Let's make sure these are integers.
+	x = math.floor(x)
+	y = math.floor(y)
 	local offset = self:getOffset(y - 1)
 	return self.data[offset + x]
 end
