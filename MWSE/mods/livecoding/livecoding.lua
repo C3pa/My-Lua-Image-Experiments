@@ -28,6 +28,7 @@ local PICKER_PREVIEW_WIDTH = 64
 local PICKER_PREVIEW_HEIGHT = 32
 local INDICATOR_TEXTURE = "textures\\menu_map_smark.dds"
 local INDICATOR_COLOR = { 0.5, 0.5, 0.5 }
+local SLIDER_SCALE = 1000
 
 local UIID = {
 	menu = tes3ui.registerID("testing:Menu"),
@@ -56,6 +57,7 @@ livecoding.registerEvent(tes3.event.keyDown, function(e)
 end)
 
 --- @class openColorPickerMenu.new.params
+--- @field id? string
 --- @field initialColor ImagePixel
 --- @field initialAlpha? number
 --- @field alpha? boolean If true the picker will also allow picking an alpha value.
@@ -78,6 +80,9 @@ local strings = {
 --- @field standardPreview tes3uiElement
 --- @field checkersPreview tes3uiElement
 
+---------------------------
+--- UI update functions ---
+---------------------------
 
 --- @param picker ColorPicker
 --- @param previews ColorPickerPreviewsTable
@@ -96,14 +101,12 @@ end
 ---| "alpha"
 ---| "slider"
 
-local function getIndicators()
-	local menu = tes3ui.findMenu(UIID.menu)
-	--- @cast menu -nil
-
+--- @param parent tes3uiElement
+local function getIndicators(parent)
 	--- @type table<IndicatorID, tes3uiElement>
 	local indicators = {}
 	for _, UIID in pairs(UIID.indicator) do
-		local indicator = menu:findChild(UIID)
+		local indicator = parent:findChild(UIID)
 		-- Not every Color Picker will have alpha indicator.
 		if indicator then
 			local id = indicator:getLuaData("indicatorID")
@@ -113,11 +116,12 @@ local function getIndicators()
 	return indicators
 end
 
+--- @param parent tes3uiElement
 --- @param newColor ffiImagePixel
 --- @param alpha number?
-local function updateIndicatorPositions(newColor, alpha)
+local function updateIndicatorPositions(parent, newColor, alpha)
 	local hsv = oklab.hsvlib_srgb_to_hsv(newColor)
-	local indicators = getIndicators()
+	local indicators = getIndicators(parent)
 	indicators.main.absolutePosAlignX = hsv.s
 	indicators.main.absolutePosAlignY = 1 - hsv.v
 	indicators.hue.absolutePosAlignY = hsv.h / 360
@@ -125,16 +129,15 @@ local function updateIndicatorPositions(newColor, alpha)
 		indicators.alpha.absolutePosAlignY = 1 - alpha
 	end
 	-- Update main picker's slider
-	indicators.slider.widget.current = hsv.s * 1000
+	indicators.slider.widget.current = hsv.s * SLIDER_SCALE
 	indicators.hue:getTopLevelMenu():updateLayout()
 end
 
+--- @param parent tes3uiElement
 --- @param newColor ffiImagePixel|ImagePixel|ImagePixelA
 --- @param alpha number
-local function updateValueInput(newColor, alpha)
-	local menu = tes3ui.findMenu(UIID.menu)
-	--- @cast menu -nil
-	local input = menu:findChild(tes3ui.registerID("ColorPicker_data_row_value_input"))
+local function updateValueInput(parent, newColor, alpha)
+	local input = parent:findChild(tes3ui.registerID("ColorPicker_data_row_value_input"))
 	if not input then return end
 
 	-- Make sure we don't get NaNs in color text inputs. We clamp alpha here.
@@ -163,33 +166,39 @@ end
 --- Used to update current preview color and the text shown in the value input.
 --- Usually used when after a color was picked in the main or alpha pickers.
 --- @param picker ColorPicker
+--- @param parent tes3uiElement
 --- @param newColor ffiImagePixel
 --- @param alpha number
 --- @param previews ColorPickerPreviewsTable
-local function colorSelected(picker, newColor, alpha, previews)
+local function colorSelected(picker, parent, newColor, alpha, previews)
 	-- Make sure we don't create reference to the pixel picked from the mainImage.
 	-- We construct a new ffiPixel.
 	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
 	picker:setColor(newColor, alpha)
 	updatePreview(picker, previews, newColor, alpha)
-	updateValueInput(newColor, alpha)
+	updateValueInput(parent, newColor, alpha)
 end
 
 --- Used when a color with different Hue was picked.
 --- @param picker ColorPicker
+--- @param parent tes3uiElement
 --- @param newColor ffiImagePixel|ImagePixel
 --- @param alpha number
 --- @param previews ColorPickerPreviewsTable
 --- @param mainPicker tes3uiElement
-local function hueChanged(picker, newColor, alpha, previews, mainPicker)
+local function hueChanged(picker, parent, newColor, alpha, previews, mainPicker)
 	-- Make sure we don't create reference to the pixel picked from the mainImage.
 	-- We construct a new ffiPixel.
 	newColor = ffiPixel({ newColor.r, newColor.g, newColor.b })
-	colorSelected(picker, newColor, alpha, previews)
+	colorSelected(picker, parent, newColor, alpha, previews)
 	-- Now, also need to regenerate the image for the main picker since the Hue changed.
 	picker:updateMainImage(newColor)
 	mainPicker.texture.pixelData:setPixelsFloat(picker.mainImage:toPixelBufferFloat())
 end
+
+-----------------------------
+--- UI creation functions ---
+-----------------------------
 
 --- @param picker ColorPicker
 --- @param parent tes3uiElement
@@ -352,8 +361,8 @@ local function createPickerBlock(params, picker, parent)
 		id = UIID.indicator.slider,
 		step = 1,
 		jump = 1,
-		current = mainIndicatorInitialAbsolutePosAlignX * 1000,
-		max = 1000,
+		current = mainIndicatorInitialAbsolutePosAlignX * SLIDER_SCALE,
+		max = SLIDER_SCALE,
 	})
 	slider.width = picker.mainWidth
 	slider.borderBottom = 8
@@ -424,23 +433,25 @@ local function createPickerBlock(params, picker, parent)
 		local x = math.clamp(e.relativeX, 1, mainPicker.width)
 		local y = math.clamp(e.relativeY, 1, mainPicker.height)
 		local pickedColor = picker.mainImage:getPixel(x, y)
-		colorSelected(picker, pickedColor, picker.currentAlpha, currentPreview)
+		colorSelected(picker, parent, pickedColor, picker.currentAlpha, currentPreview)
 
 		x = x / mainPicker.width
 		y = y / mainPicker.height
 		mainIndicator.absolutePosAlignX = x
 		mainIndicator.absolutePosAlignY = y
-		slider.widget.current = x * 1000
+		slider.widget.current = x * SLIDER_SCALE
 		mainRow:getTopLevelMenu():updateLayout()
 	end)
 	slider:register(tes3.uiEvent.partScrollBarChanged, function(e)
-		local x = math.clamp((slider.widget.current / 1000) * mainPicker.width, 1, mainPicker.width)
+		local x = math.clamp((slider.widget.current / SLIDER_SCALE) * mainPicker.width, 1, mainPicker.width)
 		local y = mainIndicator.absolutePosAlignY * mainPicker.height
 		local pickedColor = picker.mainImage:getPixel(x, y)
-		colorSelected(picker, pickedColor, picker.currentAlpha, currentPreview)
+		colorSelected(picker, parent, pickedColor, picker.currentAlpha, currentPreview)
 
-		mainIndicator.absolutePosAlignX = x / mainPicker.width
-		mainIndicator.absolutePosAlignY = y / mainPicker.height
+		x = x / mainPicker.width
+		y = y / mainPicker.height
+		mainIndicator.absolutePosAlignX = x
+		mainIndicator.absolutePosAlignY = y
 		mainRow:getTopLevelMenu():updateLayout()
 	end)
 
@@ -448,7 +459,7 @@ local function createPickerBlock(params, picker, parent)
 		local x = math.clamp(e.relativeX, 1, huePicker.width)
 		local y = math.clamp(e.relativeY, 1, huePicker.height)
 		local pickedColor = picker.hueBar:getPixel(x, y)
-		hueChanged(picker, pickedColor, picker.currentAlpha, currentPreview, mainPicker)
+		hueChanged(picker, parent, pickedColor, picker.currentAlpha, currentPreview, mainPicker)
 
 		hueIndicator.absolutePosAlignY = y / huePicker.height
 		mainRow:getTopLevelMenu():updateLayout()
@@ -457,7 +468,7 @@ local function createPickerBlock(params, picker, parent)
 	if params.alpha then
 		alphaPicker:register(tes3.uiEvent.mouseStillPressed, function(e)
 			local y = math.clamp(e.relativeY / alphaPicker.height, 0, 1)
-			colorSelected(picker, picker.currentColor, 1 - y, currentPreview)
+			colorSelected(picker, parent, picker.currentColor, 1 - y, currentPreview)
 			alphaIndicator.absolutePosAlignY = y
 			mainRow:getTopLevelMenu():updateLayout()
 		end)
@@ -466,11 +477,11 @@ local function createPickerBlock(params, picker, parent)
 	if params.showOriginal then
 		--- @param e tes3uiEventData
 		local function resetColor(e)
-			hueChanged(picker, params.initialColor, params.initialAlpha, currentPreview, mainPicker)
+			hueChanged(picker, parent, params.initialColor, params.initialAlpha, currentPreview, mainPicker)
 
 			mainIndicator.absolutePosAlignX = mainIndicatorInitialAbsolutePosAlignX
 			mainIndicator.absolutePosAlignY = mainIndicatorInitialAbsolutePosAlignY
-			slider.widget.current = mainIndicatorInitialAbsolutePosAlignX * 1000
+			slider.widget.current = mainIndicatorInitialAbsolutePosAlignX * SLIDER_SCALE
 			hueIndicator.absolutePosAlignY = hueIndicatorInitialAbsolutePosAlignY
 			if params.alpha then
 				alphaIndicator.absolutePosAlignY = 1 - params.initialAlpha
@@ -556,7 +567,7 @@ local function createDataBlock(params, picker, parent, onNewColorEntered)
 	input:registerAfter(tes3.uiEvent.keyEnter, function(e)
 		local color = format.hexToPixel(getInputValue(input))
 		-- Update other parts of the Color Picker
-		updateValueInput(color, color.a)
+		updateValueInput(parent, color, color.a)
 		onNewColorEntered(color, color.a)
 	end)
 
@@ -599,22 +610,47 @@ local function createColorPickerWidget(params, parent)
 		params.initialAlpha
 	)
 
-	local pickers = createPickerBlock(params, picker, parent)
+	local container = parent:createBlock({ id = params.id })
+	container.autoWidth = true
+	container.autoHeight = true
+	container.flowDirection = tes3.flowDirection.topToBottom
+	local pickers = createPickerBlock(params, picker, container)
 
 	if params.showDataRow then
 		--- @param newColor ffiImagePixel|ImagePixel
 		--- @param alpha number
 		local function onNewColorEntered(newColor, alpha)
-			hueChanged(picker, newColor, alpha, pickers.currentPreview, pickers.mainPicker)
+			hueChanged(picker, parent, newColor, alpha, pickers.currentPreview, pickers.mainPicker)
 			-- TODO: looks like ffi can convert our ImagePixel table to ffiImagePixel when calling oklab.hsvlib_srgb_to_hsv
-			updateIndicatorPositions(newColor, alpha)
+			updateIndicatorPositions(parent, newColor, alpha)
 		end
 
-		createDataBlock(params, picker, parent, onNewColorEntered)
+		createDataBlock(params, picker, container, onNewColorEntered)
 	end
 
 	return picker
 end
+
+
+
+--- @class tes3uiElement.createColorPicker.params : openColorPickerMenu.new.params
+--- @field id? string
+
+---@param params tes3uiElement.createColorPicker.params
+function tes3uiElement:createColorPicker(params)
+	local picker = createColorPickerWidget(params, self)
+
+	self:makeLuaWidget("colorPicker", {
+		picker = picker,
+	})
+
+	return self
+end
+
+tes3ui.defineLuaWidget({
+	name = "colorPicker",
+	metatable = ColorPicker,
+})
 
 --- @param params openColorPickerMenu.new.params
 local function openColorPickerMenu(params)
@@ -640,20 +676,43 @@ local function openColorPickerMenu(params)
 	bodyBlock.paddingBottom = 8
 	bodyBlock.flowDirection = tes3.flowDirection.topToBottom
 
-	local picker = createColorPickerWidget(params, bodyBlock)
+	params.id = "My color picker widget!"
+	bodyBlock:createColorPicker({
+		alpha = true,
+		initialColor = { r = 0.75, g = 0.15, b = 0.45 },
+		initialAlpha = 0.6,
+		showOriginal = true,
+		showDataRow = true,
+		closeCallback = function (selectedColor, selectedAlpha)
+			tes3.messageBox("Selected:\ncolor = %s,\nalpha = %s", format.pixel(selectedColor), selectedAlpha)
+		end
+	})
+
+
+	bodyBlock:createColorPicker({
+		alpha = true,
+		initialColor = { r = 0.0, g = 1, b = 1 },
+		initialAlpha = 0.6,
+		showOriginal = true,
+		showDataRow = true,
+		closeCallback = function (selectedColor, selectedAlpha)
+			tes3.messageBox("Selected:\ncolor = %s,\nalpha = %s", format.pixel(selectedColor), selectedAlpha)
+		end
+	})
+
 	context.menu:getTopLevelMenu():updateLayout()
 
-	if params.closeCallback then
-		context.menu:registerAfter(tes3.uiEvent.destroy, function()
-			--- @type ImagePixel
-			local color = {
-				r = picker.currentColor.r,
-				g = picker.currentColor.g,
-				b = picker.currentColor.b,
-			}
-			params.closeCallback(color, picker.currentAlpha)
-		end)
-	end
+	-- if params.closeCallback then
+	-- 	context.menu:registerAfter(tes3.uiEvent.destroy, function()
+	-- 		--- @type ImagePixel
+	-- 		local color = {
+	-- 			r = picker.currentColor.r,
+	-- 			g = picker.currentColor.g,
+	-- 			b = picker.currentColor.b,
+	-- 		}
+	-- 		params.closeCallback(color, picker.currentAlpha)
+	-- 	end)
+	-- end
 
 	tes3ui.enterMenuMode(UIID.menu)
 end
